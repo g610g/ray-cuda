@@ -269,7 +269,7 @@ def transform_to_key(ascii_kmer, len):
 
     return key
 
-#theres absolutely something wrong with this implementation
+#marks the base index as 1 if erroneous. 0 otherwise
 @cuda.jit
 def identify_base_trustiness(kmer_spectrum, read , offsets, result, kmer_len):
     threadIdx = cuda.grid(1)
@@ -281,15 +281,47 @@ def identify_base_trustiness(kmer_spectrum, read , offsets, result, kmer_len):
         
         for idx in range(start + kmer_len - 1, end - kmer_len - 1):
             
-            
             left_portion = read[idx - (kmer_len - 1): idx + 1]
             right_portion = read[idx: idx + kmer_len]
 
             left_kmer = transform_to_key(left_portion, 5)
             right_kmer = transform_to_key(right_portion, 5)
-            #kmer lookup is the problem here. fuck!
+           
+            #refactor kmer_lookup during optimization
             if not (in_spectrum(kmer_spectrum, left_kmer) and in_spectrum(kmer_spectrum, right_kmer)):
                 result[idx] = 1
+
+#prone to warp divergence. Too many conditional branches
+@cuda.jit
+def correct_reads(kmer_spectrum, read, offsets, result, kmer_len):
+    threadIdx = cuda.grid(1)
+    #find the read assigned to this thread
+    start, end = offsets[threadIdx][0], offsets[threadIdx][1] 
+
+    bases = [1,2,3,4]
+    #within the range of start and end, find the bases that has value one and then try to correct it 
+    
+    for idx in range(start, end):
+        if result[idx] == 1:
+            #base to be corrected
+            current_base = read[idx]
+
+            for alternative_base in bases:
+                if alternative_base != current_base:
+
+                    left_portion = read[idx - (kmer_len - 1): idx + 1]
+                    right_portion = read[idx: idx + kmer_len]
+                    left_portion[-1] = alternative_base
+                    right_portion[0] = alternative_base
+
+                    candidate_left = transform_to_key(left_portion, kmer_len) 
+                    candidate_right = transform_to_key(right_portion, kmer_len) 
+                    
+                    
+                    if (in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(kmer_spectrum, candidate_right)):
+                        pass
+
+
 
 
 @ray.remote(num_gpus=1, num_cpus=1)
@@ -307,6 +339,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets):
 
     #assigns zero to the base if trusted, otherwise 1
     identify_base_trustiness[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, dev_result, 5)
+
 
     return dev_result.copy_to_host()
     
@@ -418,12 +451,12 @@ if __name__ == '__main__':
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df['translated'].to_numpy() 
         identified_error_base = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets))
-        read_lens = ray.get(gpu_extractor.get_read_lens.remote(reads))
-        
-        print(f"reads len {read_lens}")
-
-        batch_size = len(identified_error_base) // cpus_detected
-        ray.get([batch_printing.remote((identified_error_base[batch_len: batch_len + batch_size])) for batch_len in range(0, len(identified_error_base), batch_size)])
+        # read_lens = ray.get(gpu_extractor.get_read_lens.remote(reads))
+        #
+        # print(f"reads len {read_lens}")
+        #
+        # batch_size = len(identified_error_base) // cpus_detected
+        # ray.get([batch_printing.remote((identified_error_base[batch_len: batch_len + batch_size])) for batch_len in range(0, len(identified_error_base), batch_size)])
         
         # print(identified_error_base)
         #visuals
