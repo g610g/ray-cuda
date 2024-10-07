@@ -3,10 +3,7 @@ import os
 import sys
 import threading
 import math
-from llvmlite.ir import IdentifiedStructType
-from pandas.core.dtypes.cast import invalidate_string_dtypes
 import ray
-from numba import cuda
 import cudf
 import numpy as np
 from numba import njit
@@ -15,15 +12,8 @@ from Bio import SeqIO
 # import seaborn as sns
 # import matplotlib.pyplot as plt
 import pandas as pd
-ray.init()
 
-def transform_to_key(ascii_kmer):
-    multiplier = 1
-    key = 0
-    for element in ascii_kmer[::-1]:
-        key += (element * multiplier) 
-        multiplier *= 10
-    return key
+ray.init()
 
 @ray.remote(num_cpus=1)
 def count_occurence(kmers, occurence_dictionary):
@@ -45,156 +35,7 @@ def gpu_task():
     print("CUDA_VISIBLE_DEVICES: {}".format(os.environ["CUDA_VISIBLE_DEVICES"]))
 
 
-@ray.remote(num_cpus=1)
-class KmerCounter:
-    def __init__(self):
-        self.lock = threading.Lock()
-    def count_occurence(self, kmer, kmer_counts):
-        with self.lock:
-            key = transform_to_key(kmer)
-            if key in kmer_counts:
-                kmer_counts[key] += 1
-            else:
-                kmer_counts[key] = 1
 
-@ray.remote(num_cpus=1)
-class KmerExtractor:
-    def __init__(self, kmer_length):
-        self.kmer_length = kmer_length 
-        self.translation_table = str.maketrans('ACGTN', '12345')
-    #invokes a kernel that will change the value of the
-    def extract_kmers(self, read_batch):
-        local_kmers = []
-        for read in read_batch:
-            tail = self.kmer_length
-            front = 0
-            while tail != len(read):
-
-                int_str = read[front:tail].translate(self.translation_table)
-
-                local_kmers.append(int(int_str))
-                tail += 1
-                front += 1
-                
-        np_local_kmers = np.array(local_kmers, dtype=np.uint16)
-        # return self.transform_kmers(np_local_kmers)
-        return np_local_kmers #[kmer array]
-
-    #run cuda jitted function here
-    def transform_kmers(self,local_kmers):
-        kmer_len = len(local_kmers)
-        tbp = 500
-        bpg = (kmer_len + tbp - 1) // tbp #this allocation ensures that there is more thread available that is needed for processing.
-
-        dev_local_kmers = cuda.device_array_like(local_kmers)  #host kmers are transferred into device global memory
-        dev_res = cuda.to_device(np.zeros(kmer_len, dtype=np.uint16)) #we also allocated an array to store the result of the kmers
-
-        transform_kmers_kernel[bpg, tbp](dev_local_kmers, dev_res)
-        return dev_res.copy_to_host()
-        
-@ray.remote(num_cpus=1)
-class KmerBuilder:
-    def __init__(self, read_batch, extractor) -> None:
-        self.extractor = extractor
-        self.read_batch = read_batch
-        self.dict = {}
-
-    #no data pipelining
-    def build_local_spectrum2(self):
-        for read in self.read_batch:
-            tail = 5
-            front = 0
-            while tail != len(read):
-                kmer = read[front:tail] 
-                key = transform_to_key(kmer)
-                if key in self.dict:
-                    self.dict[key]+=1
-                else:
-                    self.dict[key] = 1
-                tail += 1
-                front += 1
-        return self.dict
-
-    #useful i guess for bigger number of reads to be processed
-    #how are we going to partition each of them?
-
-    def build_local_spectrum(self):
-        
-        batch_len = len(self.read_batch)
-
-        batch_size = batch_len // 2
-        # print(batch_size) 
-
-        #extract remotely first
-        extraction_ref = self.extractor.extract_kmers.remote(self.read_batch[:batch_size])
-        print("Done sending kmers to be extracted")
-        for batch in range(batch_size, batch_len, batch_size):
-
-            #extracted kmers is large
-            extracted_kmers = ray.get(extraction_ref)
-            
-            extraction_ref = self.extractor.extract_kmers.remote(self.read_batch[batch: batch + batch_size])
-
-            print(f"Length of the extracted kmers  {len(extracted_kmers)}")
-
-            for element in extracted_kmers:
-                if element in self.dict:
-                    self.dict[element] += 1 
-                else:
-                    self.dict[element] = 1 
-        return self.dict
-
-    #counting occurence using the ascii annotation
-    
-    #we can try to use threaded actor for this
-    def count_kmer_occurence(self, kmers):
-        kmer_counts = {}
-        for kmer in kmers:
-            key = transform_to_key(kmer)
-            if key in kmer_counts:
-                kmer_counts[key] += 1
-            else:
-                kmer_counts[key] = 1
-        return kmer_counts
-    #not running in threaded
-    #extract kmers and count its occurence
-    # def extract_kmers(self, read_batch):
-    #     local_kmers = []
-    #     for read in read_batch:
-    #         tail = self.kmer_length
-    #         front = 0
-    #         while tail != len(read):
-    #             local_kmers.append(read[front:tail])
-    #             tail += 1
-    #             front += 1
-    #     return np.array(local_kmers)
-
-    #running in threaded
-    # def extract_kmers_threaded(self):
-    #     self.current_index += 1
-    #     if self.current_index == len(self.read_batch):
-    #         print(f"We have an index error with an index of: {self.current_index}")
-    #         return
-    #     self.get_kmers(self.current_index)
-
-
-@ray.remote
-def build_local_spectrum2(read_batch):
-    local_kmer_spectrum = {}
-    print(len(read_batch)) 
-    for read in read_batch:
-        tail = 5
-        front = 0
-        while tail != len(read):
-            kmer = read[front:tail] 
-            key = transform_to_key(kmer)
-            if key in local_kmer_spectrum:
-                local_kmer_spectrum[key]+=1
-            else:
-                local_kmer_spectrum[key] = 1
-            tail += 1
-            front += 1
-    return local_kmer_spectrum
 @ray.remote(num_gpus=1)
 def run_jitted_cuda():
     arr = cuda.device_array_like(np.arange(1000, dtype=np.uint16))
@@ -451,12 +292,6 @@ if __name__ == '__main__':
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df['translated'].to_numpy() 
         identified_error_base = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets))
-        # read_lens = ray.get(gpu_extractor.get_read_lens.remote(reads))
-        #
-        # print(f"reads len {read_lens}")
-        #
-        # batch_size = len(identified_error_base) // cpus_detected
-        # ray.get([batch_printing.remote((identified_error_base[batch_len: batch_len + batch_size])) for batch_len in range(0, len(identified_error_base), batch_size)])
         
         # print(identified_error_base)
         #visuals
