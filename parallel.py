@@ -1,8 +1,10 @@
+from logging import error
 import time 
 import os
 import sys
 import threading
 import math
+from numpy.core.multiarray import dtype
 import ray
 import cudf
 import numpy as np
@@ -15,6 +17,46 @@ import pandas as pd
 
 ray.init()
 
+#prone to warp divergence. Too many conditional branches
+# @cuda.jit
+# def correct_reads(kmer_spectrum, read, offsets, result, kmer_len, corrected_counter):
+#     threadIdx = cuda.grid(1)
+#
+#     #find the read assigned to this thread
+#     start, end = offsets[threadIdx][0], offsets[threadIdx][1] 
+#
+#     bases = cuda.local.array(4, dtype='uint8')
+#     for i in range(1, 5):
+#         bases[i - 1] = i
+#     #within the range of start and end, find the bases that has value one and then try to correct it 
+#
+#     for idx in range(start, end):
+#         if result[idx] == 1:
+#             #base to be corrected
+#             current_base = read[idx]
+#             candidate_count = 0
+#             candidate = -1
+#
+#             for alternative_base in bases:
+#                 if alternative_base != current_base:
+#
+#                     left_portion = read[idx - (kmer_len - 1): idx + 1]
+#                     right_portion = read[idx: idx + kmer_len]
+#                     left_portion[-1] = alternative_base
+#                     right_portion[0] = alternative_base
+#
+#                     candidate_left = transform_to_key(left_portion, kmer_len) 
+#                     candidate_right = transform_to_key(right_portion, kmer_len) 
+#
+#                     #push if it has one candidate
+#                     if (in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(kmer_spectrum, candidate_right)):
+#                         candidate_count += 1 
+#                         candidate = alternative_base
+#             if candidate_count == 1:
+#                 read[idx] = candidate
+#                 corrected_counter[idx] = 1
+#             if candidate_count > 1:
+#                 corrected_counter[idx] = candidate_count
 @ray.remote(num_cpus=1)
 def count_occurence(kmers, occurence_dictionary):
     for key in kmers:
@@ -38,35 +80,25 @@ def gpu_task():
 
 @ray.remote(num_gpus=1)
 def run_jitted_cuda():
-    arr = cuda.device_array_like(np.arange(1000, dtype=np.uint16))
-    dev_res  = cuda.to_device(np.zeros(1000,dtype=np.uint16))
+    arr = cuda.device_array_like(np.arange(10000, dtype=np.uint16))
 
-    tbp = 500
-    bpg = len(arr) + (tbp - 1) // tbp
+    tpb = 1000
+    bpg = len(arr) + (tpb- 1) // tpb
 
-    increment_kernel[bpg, tbp](arr, dev_res)
+    increment_kernel[bpg, tpb](arr)
 
-    print(dev_res.copy_to_host())
+    return (arr.copy_to_host())
+
+@cuda.jit(device=True)
+def increment_device(idx, global_arr):
+    global_arr[idx] += 2
+
 @cuda.jit
-def increment_kernel(dev_arr, dev_res):
-    idx = cuda.threadIdx.x  
+def increment_kernel(dev_arr):
+    idx = cuda.grid(1)
     if idx < len(dev_arr):
-        dev_res[idx] = dev_arr[idx] + 1
-@cuda.jit
-def transform_kmers_kernel(dev_local_kmers, dev_res):
-    #not sure if this is enough for indexing
-    t_idx = cuda.threadIdx.x
+       increment_device(idx, dev_arr) 
 
-    if t_idx < len(dev_local_kmers):
-        
-        #transform to its corresponding key
-        key = 0
-        idx = len(dev_local_kmers[t_idx]) - 1
-        multiplier = 1
-        while idx >= 0:
-            key += (dev_local_kmers[t_idx][idx] * multiplier)
-            multiplier *= 10
-        dev_res[t_idx] = key
 
 # simple transpose communication pattern
 @cuda.jit
@@ -89,16 +121,14 @@ def sync(dev_arr, res_arr, sum):
     sum[tx + ty] = res_arr[tx][ty]
 
 
-
-#this actor has a gpu allocated to it and this actor calls the cudf with its allocated resource in order to prepare the kmer spectrum data
-#before operating it using probabilistic model
-
+#the linear search for kmer
 @cuda.jit(device=True)
 def in_spectrum(spectrum, kmer):
     for k in spectrum:
         if kmer == k:
             return True
     return False
+
 @cuda.jit(device=True)
 def transform_to_key(ascii_kmer, len):
     multiplier = 1
@@ -109,91 +139,79 @@ def transform_to_key(ascii_kmer, len):
         len -= 1
 
     return key
+@cuda.jit(device=True)
+def correct_reads(idx, read, kmer_len,kmer_spectrum, corrected_counter, bases, left_kmer, right_kmer, threadIdx, counter):
+    current_base = read[idx]
+    posibility = 0
+    candidate = -1
 
-@cuda.jit
-def identify_base_trustiness_shared(kmer_spectrum, read , start, end, kmer_len, result ):
-    threadIdx = cuda.grid(1)
+    for alternative_base in bases:
+        if alternative_base != current_base:
 
-    dev_tidx = threadIdx + start
+            #array representation
+            left_kmer[-1] = alternative_base
+            right_kmer[0] = alternative_base
+            
+            #whole number representation
+            candidate_left = transform_to_key(left_kmer, kmer_len)
+            candidate_right = transform_to_key(right_kmer, kmer_len)
 
-    #start 32 end 63 63 - 32 = 31
-    # 0 + 32  < 32 + 4 or 63 + 32 > 
-    if not (dev_tidx < start + kmer_len - 1 or dev_tidx > end - 1 - kmer_len - 1):
-        left_portion = read[dev_tidx -(kmer_len - 1): dev_tidx + 1]
-        right_portion = read[dev_tidx : dev_tidx + kmer_len]
-        
-        left_kmer = transform_to_key(left_portion, 5)
-        right_kmer = transform_to_key(right_portion, 5)
-           
-        #refactor kmer_lookup during optimization
-        if not (in_spectrum(kmer_spectrum, left_kmer) and in_spectrum(kmer_spectrum, right_kmer)):
-            result[dev_tidx] = 1
+            #the alternative base makes our kmers trusted
+            if in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(kmer_spectrum, candidate_right):
+                posibility += 1
+                candidate = alternative_base
 
+    if posibility == 0:
+        corrected_counter[threadIdx][counter] = 10
+        counter += 1
+
+    if  posibility > 1:
+        corrected_counter[threadIdx][counter] = posibility
+        counter += 1
+
+    if posibility == 1:
+        read[idx] = candidate
+        corrected_counter[threadIdx][counter] = posibility
+        counter += 1
+
+    return counter
 #marks the base index as 1 if erroneous. 0 otherwise
 @cuda.jit
-def identify_base_trustiness(kmer_spectrum, read, offsets, result, kmer_len):
+def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_counter):
     threadIdx = cuda.grid(1)
-
-    #find the read assigned to this thread
-    start, end = offsets[threadIdx][0], offsets[threadIdx][1] 
-
+    counter = 0
+    kmer_counter = 0
     #if the rightside and leftside are present in the kmer spectrum, then assign 1 into the result. Otherwise, 0
     if  threadIdx < offsets.shape[0]:
-        
-        for idx in range(start + kmer_len - 1, end - kmer_len - 1):
-            
-            #global memory access
+
+        #find the read assigned to this thread
+        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+
+        bases = cuda.local.array(5, dtype='uint8')
+        for i in range(5):
+            bases[i] = i + 1
+
+        for idx in range(start + kmer_len - 1, end - (kmer_len - 1)):
+
+            #the array representation of the the kmer
             left_portion = read[idx - (kmer_len - 1): idx + 1]
             right_portion = read[idx: idx + kmer_len]
 
-            left_kmer = transform_to_key(left_portion, 5)
-            right_kmer = transform_to_key(right_portion, 5)
-           
+            #whole number representation of the kmer
+            left_kmer = transform_to_key(left_portion, kmer_len)
+            right_kmer = transform_to_key(right_portion, kmer_len)
+
             #refactor kmer_lookup during optimization
+            #if any of this kmers surrounding the current base is not solids, then the base is subject for correction
             if not (in_spectrum(kmer_spectrum, left_kmer) and in_spectrum(kmer_spectrum, right_kmer)):
-                result[idx] = 1
 
-#prone to warp divergence. Too many conditional branches
-@cuda.jit
-def correct_reads(kmer_spectrum, read, offsets, result, kmer_len, corrected_counter):
-    threadIdx = cuda.grid(1)
+                counter = correct_reads(idx, read, kmer_len, kmer_spectrum, corrected_counter, bases, left_portion, right_portion, threadIdx, counter)
 
-    #find the read assigned to this thread
-    start, end = offsets[threadIdx][0], offsets[threadIdx][1] 
+                result[threadIdx][kmer_counter], result[threadIdx][kmer_counter + 1] = left_kmer, right_kmer
+                kmer_counter += 2
 
-    bases = cuda.local.array(4, dtype='uint8')
-    for i in range(1, 5):
-        bases[i] = i
-    #within the range of start and end, find the bases that has value one and then try to correct it 
-    
-    for idx in range(start, end):
-        if result[idx] == 1:
-            #base to be corrected
-            current_base = read[idx]
-            candidate_count = 0
-            candidate = -1
-
-            for alternative_base in bases:
-                if alternative_base != current_base:
-
-                    left_portion = read[idx - (kmer_len - 1): idx + 1]
-                    right_portion = read[idx: idx + kmer_len]
-                    left_portion[-1] = alternative_base
-                    right_portion[0] = alternative_base
-
-                    candidate_left = transform_to_key(left_portion, kmer_len) 
-                    candidate_right = transform_to_key(right_portion, kmer_len) 
-
-
-                    #push if it has one candidate
-                    if (in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(kmer_spectrum, candidate_right)):
-                        candidate_count += 1 
-                        candidate = alternative_base
-            if candidate_count == 1:
-                read[idx] = candidate
-                corrected_counter[idx] = 1
 @ray.remote(num_gpus=1, num_cpus=1)
-def remote_two_sided(kmer_spectrum, reads_1d, offsets):
+def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
@@ -203,28 +221,25 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets):
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
-    dev_result = cuda.to_device(np.zeros(reads_1d.size, dtype=np.int32))
-
+    dev_result = cuda.to_device(np.zeros((offsets.shape[0], 20), dtype='uint64'))
+    dev_corrected_counter = cuda.to_device(np.zeros((len(offsets), 50), dtype='uint64'))
 
     #allocating gpu threads
-    tbp = 1000
+    tbp = 500
     bpg = (offsets.shape[0] + tbp) // tbp
 
     # #assigns zero to the base if trusted, otherwise 1
-
-    identify_base_trustiness[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, dev_result, 5)
-
-    dev_corrected_counter= cuda.to_device(np.zeros(reads_1d.size, dtype=np.int32))
-    correct_reads[bpg, tbp](dev_kmer_spectrum, dev_reads_1d , dev_offsets, dev_result, 5, dev_corrected_counter)
+    two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
 
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the kernel:  {transfer_time} ms")
 
+    h_corrected_counter = dev_corrected_counter.copy_to_host()
     cuda.profile_stop()
-    return dev_corrected_counter.copy_to_host()
-    
+    return [h_corrected_counter ,dev_result.copy_to_host()]
+
 @ray.remote(num_gpus=1, num_cpus=1)
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
@@ -295,13 +310,43 @@ def calculatecutoff_threshold(occurence_data, bin):
     return math.ceil(bin_centers[min_density_idx])
 
 @ray.remote(num_cpus=1) 
-def batch_printing(batch_data):
-    ones = 0
-    for base in batch_data:
-        if base == 1:
-            ones += 1
-    print(ones)
+def batch_printing(batch_data, kmer_spectrum):
 
+    for idx, error_kmers in enumerate(batch_data):
+        if error_kmers[0] != 0:
+            print(f"For idx {idx}")
+            for kmer_idx in range(0, len(error_kmers), 2):
+                print(f"left {error_kmers[kmer_idx]}, right {error_kmers[kmer_idx + 1]}")
+
+@ray.remote(num_cpus=1) 
+def batch_printing_counter(batch_data):
+
+    # for idx, corrections in enumerate(batch_data):
+    #     tot_sum = sum(corrections) 
+    #     if tot_sum < (50 * 100) and tot_sum != 0:
+    #         print(f"idx {idx} does corrected an error with an tot sum of {tot_sum}")
+    #
+    for idx, corrections in enumerate(batch_data):
+        for correction in corrections:
+            if correction == 10:
+                print("Error but no alternatives")
+
+            if correction == 1:
+                print("yehey!!!!")
+
+            if correction > 1:
+                print("huhuhu!!!!")
+
+def help(read, kmer_len, offsets):
+    for offset in offsets:
+        start, end = offset[0], offset[1]
+        for idx in range(start + kmer_len - 1, end - (kmer_len - 1)):
+
+            left_portion = read[idx - (kmer_len - 1): idx + 1]
+            right_portion = read[idx: idx + kmer_len]
+            if len(left_portion) != kmer_len or len(right_portion) != kmer_len:
+
+                print("Naay extracted nga below kmer len")
 @ray.remote(num_gpus=1) 
 class GPUPing:
     def ping(self):
@@ -316,32 +361,37 @@ if __name__ == '__main__':
             print(usage)
             exit(1)
 
-        print(cuda.list_devices())
         with open(sys.argv[1]) as handle:
             fastq_data = SeqIO.parse(handle, 'fastq')
             reads = [str(data.seq) for data in fastq_data]
 
+        kmer_len = 5
         cpus_detected = int(ray.cluster_resources()['CPU'])
-        
-        gpu_extractor = KmerExtractorGPU.remote(5)
+        gpu_extractor = KmerExtractorGPU.remote(kmer_len)
         kmer_occurences = ray.get(gpu_extractor.transform_reads.remote(reads))
         offsets = ray.get(gpu_extractor.get_offsets.remote(reads))
         reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads))
         pd_kmers = kmer_occurences.to_pandas()
-
+        
         occurence_data = kmer_occurences['count'].to_numpy()
-
+        
         cutoff_threshold = calculatecutoff_threshold(occurence_data, 60)
+        # print(f"cutoff threshold: {cutoff_threshold}")
+        
+
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df['translated'].to_numpy() 
-        identified_error_base = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets))
+        # help(reads_1d, kmer_len, offsets)
+        [corrected_counter, result_counter] = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len))
 
-        print(f"number of bases{reads_1d.shape[0]}") 
+        # print(f"marked number of alternatives for a base: {identified_error_base}") 
+        batch_size = len(corrected_counter) // cpus_detected
 
-        batch_size = len(identified_error_base) // cpus_detected
-        ray.get([batch_printing.remote((identified_error_base[batch_len: batch_len + batch_size])) for batch_len in range(0, len(identified_error_base), batch_size)])
+        # print("Result counter :")
+        # ray.get([batch_printing.remote((result_counter[batch_len: batch_len + batch_size]), kmer_np) for batch_len in range(0, len(result_counter), batch_size)])
 
-        # print(identified_error_base)
+        print("Corrected counter :")
+        ray.get([batch_printing_counter.remote((corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(corrected_counter), batch_size)])
         #visuals
         # plt.figure(figsize=(12, 6))
         # sns.histplot(pd_kmers['count'], bins=60, kde=True, color='blue', alpha=0.7)
