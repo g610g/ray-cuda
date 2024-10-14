@@ -5,6 +5,7 @@ import sys
 import threading
 import math
 from numpy.core.multiarray import dtype
+from pandas.core.ops.array_ops import should_extension_dispatch
 import ray
 import cudf
 import numpy as np
@@ -181,34 +182,46 @@ def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_c
     threadIdx = cuda.grid(1)
     counter = 0
     kmer_counter = 0
+    
     #if the rightside and leftside are present in the kmer spectrum, then assign 1 into the result. Otherwise, 0
     if  threadIdx < offsets.shape[0]:
 
         #find the read assigned to this thread
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-
+        MAX_LEN = 256 
         bases = cuda.local.array(5, dtype='uint8')
+        solids = cuda.local.array(MAX_LEN, dtype='int8')
+
+        for i in range(end - start):
+            solids[i] = -1
+
         for i in range(5):
             bases[i] = i + 1
 
-        for idx in range(start + kmer_len - 1, end - (kmer_len - 1)):
+        #identify whether base is solid or not
+        for idx in range(start, end - (kmer_len - 1)):
+            curr_kmer = transform_to_key(read[idx:idx + kmer_len], kmer_len)
 
-            #the array representation of the the kmer
-            left_portion = read[idx - (kmer_len - 1): idx + 1]
-            right_portion = read[idx: idx + kmer_len]
+            #set the bases as solids
+            if in_spectrum(kmer_spectrum, curr_kmer):
 
-            #whole number representation of the kmer
-            left_kmer = transform_to_key(left_portion, kmer_len)
-            right_kmer = transform_to_key(right_portion, kmer_len)
+                for i in range(idx, idx + kmer_len):
 
-            #refactor kmer_lookup during optimization
-            #if any of this kmers surrounding the current base is not solids, then the base is subject for correction
-            if not (in_spectrum(kmer_spectrum, left_kmer) and in_spectrum(kmer_spectrum, right_kmer)):
+                    solids[i - start] = 1
 
-                counter = correct_reads(idx, read, kmer_len, kmer_spectrum, corrected_counter, bases, left_portion, right_portion, threadIdx, counter)
+        for idx in range(end - start):
+            result[threadIdx][idx] = solids[idx]
 
-                result[threadIdx][kmer_counter], result[threadIdx][kmer_counter + 1] = left_kmer, right_kmer
-                kmer_counter += 2
+        #check whether base is potential for correction
+        #kulang pani diria
+        for base_idx in range(end - start):
+            #the base needs to be corrected
+            if solids[base_idx] == -1 and base_idx >= (kmer_len - 1):
+
+                left_portion = read[(base_idx + start) - (kmer_len - 1): base_idx + start + 1]
+                right_portion = read[base_idx + start: base_idx + kmer_len]
+
+                counter = correct_reads(base_idx + start, read, kmer_len, kmer_spectrum, corrected_counter, bases, left_portion, right_portion, threadIdx, counter)
 
 @ray.remote(num_gpus=1, num_cpus=1)
 def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
@@ -221,7 +234,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
-    dev_result = cuda.to_device(np.zeros((offsets.shape[0], 20), dtype='uint64'))
+    dev_result = cuda.to_device(np.zeros((offsets.shape[0], 256), dtype='uint64'))
     dev_corrected_counter = cuda.to_device(np.zeros((len(offsets), 50), dtype='uint64'))
 
     #allocating gpu threads
@@ -313,10 +326,7 @@ def calculatecutoff_threshold(occurence_data, bin):
 def batch_printing(batch_data, kmer_spectrum):
 
     for idx, error_kmers in enumerate(batch_data):
-        if error_kmers[0] != 0:
-            print(f"For idx {idx}")
-            for kmer_idx in range(0, len(error_kmers), 2):
-                print(f"left {error_kmers[kmer_idx]}, right {error_kmers[kmer_idx + 1]}")
+        print(error_kmers)
 
 @ray.remote(num_cpus=1) 
 def batch_printing_counter(batch_data):
