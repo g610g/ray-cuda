@@ -243,8 +243,9 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     tbp = 1024
     bpg = (offsets.shape[0] + tbp) // tbp
 
-    # #assigns zero to the base if trusted, otherwise 1
     two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
+
+    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len)
 
     end.record()
     end.synchronize()
@@ -256,11 +257,55 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     return [h_corrected_counter ,dev_result.copy_to_host()]
 
 @cuda.jit(device=True)
+def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
+    possibility = 0
+    alternative = -1
+
+    curr_kmer = reads[start + region_start:(start + region_start) + kmer_len]
+    backward_kmer = reads[(start + region_start ) - 1: (start + region_start) + (kmer_len - 1)]
+
+    curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len) 
+    backward_kmer_transformed = transform_to_key(backward_kmer, kmer_len) 
+
+    if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(kmer_spectrum, backward_kmer_transformed):
+        #find alternative  base
+
+        for alternative_base in bases:
+            backward_kmer[0] = alternative_base
+            candidate_kmer = transform_to_key(backward_kmer, kmer_len)
+
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+
+                #alternative base and its corresponding kmer count
+                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, 4000
+                possibility += 1
+                alternative = alternative_base
+
+    #not sure if correct indexing for reads
+    if possibility == 1:
+        reads[(start + region_start) - 1] = alternative
+        return True
+
+    #Break the correction since it fails to correct the read
+    if possibility == 0:
+        return False
+
+    #we have to iterate the number of alternatives and find the max element
+    if possibility > 1:
+        max = 0
+        for idx in range(possibility):
+            if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
+                max = idx
+
+        reads[(start + region_start) - 1] = alternatives[max][0]
+        return True
+@cuda.jit(device=True)
 def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
 
     alternative_counter = 0
     possibility = 0
     alternative = -1
+
     curr_kmer = reads[start + (region_end - (kmer_len - 1)): region_end + start + 1]
     forward_kmer = reads[start + (region_end - (kmer_len - 1)) + 1: region_end + start + 2]
 
@@ -268,14 +313,17 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
     forward_kmer_transformed = transform_to_key(forward_kmer, kmer_len) 
 
     #we can now correct this. else return diz shet or break 
+    #if false does it imply failure?
     if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(kmer_spectrum, forward_kmer_transformed):
         #find alternative  base
 
         for alternative_base in bases:
             forward_kmer[-1] = alternative_base
             candidate_kmer = transform_to_key(forward_kmer, kmer_len)
+
             if in_spectrum(kmer_spectrum, candidate_kmer):
 
+                #alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = alternative_base, 4000
                 possibility += 1
                 alternative = alternative_base
@@ -292,8 +340,8 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
     #we have to iterate the number of alternatives and find the max element
     if possibility > 1:
         max = 0
-        for idx in range(alternative_counter):
-            if alternatives[idx][1] + 1 > alternatives[max][1] + 1:
+        for idx in range(possibility):
+            if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
                 max = idx
 
         reads[region_end + start + 1] = alternatives[max][0]
@@ -351,14 +399,14 @@ def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_
 @cuda.jit
 def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len):
     threadIdx = cuda.grid(1) 
-    
+
     if threadIdx < offsets.shape[0]:
 
         MAX_LEN = 256
         region_indices = cuda.local.array((10,2), dtype="int8")
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         solids = cuda.local.array(MAX_LEN, dtype='int8')
-        alternatives = cuda.local.array((4, 2) dtype='uint32')
+        alternatives = cuda.local.array((4, 2), dtype='uint32')
 
         for i in range(end - start):
             solids[i] = -1
@@ -366,26 +414,59 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len):
         bases = cuda.local.array(5, dtype='uint8')
         regions_count = identify_trusted_regions(start, end, kmer_spectrum, reads_1d, kmer_len, region_indices, solids)
 
-        #fails to correct the read (how about regions that has no error?)
+        #fails to correct the read does not have a trusted region (how about regions that has no error?)
         if regions_count == 0:
             return
 
         for region in range(regions_count):
-            #going to the right first
+            #going towards right of the region 
 
             #there is no next region
-            if region + 1 == regions_count:
-
-                region_start, region_end = region_indices[region][0], region_indices[region][1]
-                while region_end + 1 != (end - start):
-                    curr_kmer = reads_1d[start + (region_end - (kmer_len - 1)): region_end + start + 1]
+            if region  == (regions_count - 1):
+                region_end = region_indices[region][1]
+                while region_end  != ((end - start) - 1):
+                    if not correct_read_one_sided_right(reads_1d, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
+                        break
+                    else:
+                        region_end += 1
+                        region_indices[region][1] = region_end
 
             #there is a next region
-            if region + 1 != regions_count:
-                region_start, region_end = region_indices[region][0], region_indices[region][1]
-                next_region_start, next_region_end = region_indices[region + 1][0], region_indices[region + 1][1]
+            if region  != (regions_count - 1):
+                region_end = region_indices[region][1]
+                next_region_start = region_indices[region + 1][0] 
+
                 while region_end != (next_region_start - 1):
-                    pass
+                    if not correct_read_one_sided_right(reads_1d, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
+                        break
+                    else:
+                        region_end += 1
+                        region_indices[region][1] = region_end
+
+            #going towards left of the region
+
+            #we are the leftmost region
+            if region - 1 == -1:
+                region_start = region_indices[region][0]
+
+                #while we are not at the first base of the read
+                while region_start != 0:
+                    if not correct_read_one_sided_left(reads_1d, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
+                        break
+                    else:
+                        region_start -= 1
+                        region_indices[region][0] = region_start
+
+            #there is another region in the left side of this region 
+            if region - 1 != -1:
+                region_start, prev_region_end = region_indices[region][0], region_indices[region - 1][1]
+                while region_start - 1 != (prev_region_end):
+
+                    if not correct_read_one_sided_left(reads_1d, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
+                        break
+                    else:
+                        region_start -= 1
+                        region_indices[region][0] = region_start
 
 
 @ray.remote(num_gpus=1, num_cpus=1)
