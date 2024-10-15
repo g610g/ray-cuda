@@ -288,15 +288,16 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
     #Break the correction since it fails to correct the read
     if possibility == 0:
         return False
+
     #we have to iterate the number of alternatives and find the max element
     if possibility > 1:
         max = 0
         for idx in range(alternative_counter):
             if alternatives[idx][1] + 1 > alternatives[max][1] + 1:
                 max = idx
-        
-        reads[region_end + start + 1] = alternatives[max][0]
 
+        reads[region_end + start + 1] = alternatives[max][0]
+        return True
 
 #identifying the trusted region in the read and store it into the 2d array
 @cuda.jit(device=True)
