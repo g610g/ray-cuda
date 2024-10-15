@@ -2,6 +2,7 @@ import time
 import os
 import sys
 import math
+from numpy.core.multiarray import dtype
 import ray
 import cudf
 import numpy as np
@@ -146,7 +147,7 @@ def correct_reads(idx, read, kmer_len,kmer_spectrum, corrected_counter, bases, l
             #array representation
             left_kmer[-1] = alternative_base
             right_kmer[0] = alternative_base
-            
+
             #whole number representation
             candidate_left = transform_to_key(left_kmer, kmer_len)
             candidate_right = transform_to_key(right_kmer, kmer_len)
@@ -254,13 +255,54 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     cuda.profile_stop()
     return [h_corrected_counter ,dev_result.copy_to_host()]
 
+@cuda.jit(device=True)
+def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
+
+    alternative_counter = 0
+    possibility = 0
+    alternative = -1
+    curr_kmer = reads[start + (region_end - (kmer_len - 1)): region_end + start + 1]
+    forward_kmer = reads[start + (region_end - (kmer_len - 1)) + 1: region_end + start + 2]
+
+    curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len) 
+    forward_kmer_transformed = transform_to_key(forward_kmer, kmer_len) 
+
+    #we can now correct this. else return diz shet or break 
+    if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(kmer_spectrum, forward_kmer_transformed):
+        #find alternative  base
+
+        for alternative_base in bases:
+            forward_kmer[-1] = alternative_base
+            candidate_kmer = transform_to_key(forward_kmer, kmer_len)
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+
+                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, 4000
+                possibility += 1
+                alternative = alternative_base
+
+    #not sure if correct indexing for reads
+    if possibility == 1:
+        reads[region_end + start + 1] = alternative
+        return True
+
+    #Break the correction since it fails to correct the read
+    if possibility == 0:
+        return False
+    #we have to iterate the number of alternatives and find the max element
+    if possibility > 1:
+        max = 0
+        for idx in range(alternative_counter):
+            if alternatives[idx][1] + 1 > alternatives[max][1] + 1:
+                max = idx
+        
+        reads[region_end + start + 1] = alternatives[max][0]
+
+
 #identifying the trusted region in the read and store it into the 2d array
 @cuda.jit(device=True)
 def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_indices, solids):
 
-    current_indices_idx = 0
-    base_count = 0
-
+    #we can use the solids array from the two sided (not yet done)
     for idx in range(start, end - (kmer_len - 1)):
             curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
 
@@ -270,6 +312,8 @@ def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_
                 # mark_solids_array(solids, idx, idx + kmer_len, start)
                 mark_solids_array(solids, idx - start,  (idx + kmer_len) - start)
 
+    current_indices_idx = 0
+    base_count = 0
     region_start = 0
     prefix = 0
 
@@ -282,16 +326,25 @@ def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_
             region_start = idx + 1
             current_indices_idx += 1
             prefix = idx + 1
+            base_count = 0
 
         #reset the region start since its left part is not a trusted region anymore
-        if solids[idx] == -1:
+        if solids[idx] == -1 and base_count < kmer_len:
             region_start = idx + 1
             prefix = idx + 1
+            base_count = 0
 
         if solids[idx] == 1:
             prefix = idx
             base_count += 1
 
+    #ending
+    if base_count >= kmer_len:
+
+        region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, prefix
+        current_indices_idx += 1
+
+    #this will be the length or the number of trusted regions
     return current_indices_idx
 
 @cuda.jit
@@ -299,10 +352,39 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len):
     threadIdx = cuda.grid(1) 
     
     if threadIdx < offsets.shape[0]:
-            
+
+        MAX_LEN = 256
         region_indices = cuda.local.array((10,2), dtype="int8")
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        solids = cuda.local.array(MAX_LEN, dtype='int8')
+        alternatives = cuda.local.array((4, 2) dtype='uint32')
+
+        for i in range(end - start):
+            solids[i] = -1
+
         bases = cuda.local.array(5, dtype='uint8')
+        regions_count = identify_trusted_regions(start, end, kmer_spectrum, reads_1d, kmer_len, region_indices, solids)
+
+        #fails to correct the read (how about regions that has no error?)
+        if regions_count == 0:
+            return
+
+        for region in range(regions_count):
+            #going to the right first
+
+            #there is no next region
+            if region + 1 == regions_count:
+
+                region_start, region_end = region_indices[region][0], region_indices[region][1]
+                while region_end + 1 != (end - start):
+                    curr_kmer = reads_1d[start + (region_end - (kmer_len - 1)): region_end + start + 1]
+
+            #there is a next region
+            if region + 1 != regions_count:
+                region_start, region_end = region_indices[region][0], region_indices[region][1]
+                next_region_start, next_region_end = region_indices[region + 1][0], region_indices[region + 1][1]
+                while region_end != (next_region_start - 1):
+                    pass
 
 
 @ray.remote(num_gpus=1, num_cpus=1)
@@ -383,11 +465,6 @@ def batch_printing(batch_data, kmer_spectrum):
 @ray.remote(num_cpus=1) 
 def batch_printing_counter(batch_data):
 
-    # for idx, corrections in enumerate(batch_data):
-    #     tot_sum = sum(corrections) 
-    #     if tot_sum < (50 * 100) and tot_sum != 0:
-    #         print(f"idx {idx} does corrected an error with an tot sum of {tot_sum}")
-    #
     for idx, corrections in enumerate(batch_data):
         for correction in corrections:
             if correction == 10:
