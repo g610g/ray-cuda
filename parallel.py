@@ -82,7 +82,7 @@ def sync(dev_arr, res_arr, sum):
 @cuda.jit(device=True)
 def in_spectrum(spectrum, kmer):
     for k in spectrum:
-        if kmer == k:
+        if kmer == k[0]:
             return True
     return False
 
@@ -106,6 +106,12 @@ def mark_solids_array(solids, start, end):
 
 #for correcting the edge bases in two-sided correction (not sure of the implementation yet)
 #only corrects the left edges of the read
+@cuda.jit(device=True)
+def give_kmer_multiplicity(kmer_spectrum, kmer):
+    for k in kmer_spectrum:
+        if k[0] == kmer:
+            return k[1]
+    return -1
 @cuda.jit(device=True)
 def correct_edge_bases(idx, read, kmer, bases, kmer_len, kmer_spectrum, threadIdx, counter, corrected_counter):
     current_base = read[idx]
@@ -239,13 +245,15 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     dev_result = cuda.to_device(np.zeros((offsets.shape[0], 256), dtype='uint64'))
     dev_corrected_counter = cuda.to_device(np.zeros((len(offsets), 50), dtype='uint64'))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 256), dtype='int8'))
+    dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 256), dtype='int8'))
+    not_corrected_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype='int16'))
     #allocating gpu threads
     tbp = 1024
     bpg = (offsets.shape[0] + tbp) // tbp
 
     two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
 
-    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids)
+    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
 
     end.record()
     end.synchronize()
@@ -254,7 +262,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
 
     h_corrected_counter = dev_corrected_counter.copy_to_host()
     cuda.profile_stop()
-    return [h_corrected_counter ,dev_result.copy_to_host(), dev_solids.copy_to_host()]
+    return [h_corrected_counter ,dev_result.copy_to_host(), dev_solids_after.copy_to_host(), not_corrected_counter.copy_to_host()]
 
 @cuda.jit(device=True)
 def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
@@ -269,7 +277,6 @@ def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_
 
     if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(kmer_spectrum, backward_kmer_transformed):
         #find alternative  base
-
         for alternative_base in bases:
             backward_kmer[0] = alternative_base
             candidate_kmer = transform_to_key(backward_kmer, kmer_len)
@@ -277,19 +284,19 @@ def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_
             if in_spectrum(kmer_spectrum, candidate_kmer):
 
                 #alternative base and its corresponding kmer count
-                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, 4000 + alternative_base
+                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, give_kmer_multiplicity(kmer_spectrum, candidate_kmer)
                 possibility += 1
                 alternative = alternative_base
-    else:
+
+    #Break the correction since it fails to correct the read
+    if possibility == 0:
         return False
+
     #not sure if correct indexing for reads
     if possibility == 1:
         reads[(start + region_start) - 1] = alternative
         return True
 
-    #Break the correction since it fails to correct the read
-    if possibility == 0:
-        return False
 
     #we have to iterate the number of alternatives and find the max element
     if possibility > 1:
@@ -325,11 +332,12 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
             if in_spectrum(kmer_spectrum, candidate_kmer):
 
                 #alternative base and its corresponding kmer count
-                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, 4000
+                alternatives[possibility][0], alternatives[possibility][1] = alternative_base, give_kmer_multiplicity(kmer_spectrum, candidate_kmer)
                 possibility += 1
                 alternative = alternative_base
 
-    else:
+    #break the correction since it fails to correct the read
+    if possibility == 0:
         return False
 
     #not sure if correct indexing for reads
@@ -337,9 +345,7 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
         reads[region_end + start + 1] = alternative
         return True
 
-    #Break the correction since it fails to correct the read
-    if possibility == 0:
-        return False
+    
 
     #we have to iterate the number of alternatives and find the max element
     if possibility > 1:
@@ -350,6 +356,17 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
 
         reads[region_end + start + 1] = alternatives[max][0]
         return True
+
+@cuda.jit(device=True)
+def identify_solid_bases(reads, start, end, kmer_len, kmer_spectrum, solids):
+    for idx in range(start, end - (kmer_len - 1)):
+        curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
+
+        #set the bases as solids
+        if in_spectrum(kmer_spectrum, curr_kmer):
+
+            # mark_solids_array(solids, idx, idx + kmer_len, start)
+            mark_solids_array(solids, idx - start,  (idx + kmer_len) - start)
 
 #identifying the trusted region in the read and store it into the 2d array
 @cuda.jit(device=True)
@@ -368,33 +385,33 @@ def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_
     current_indices_idx = 0
     base_count = 0
     region_start = 0
-    prefix = 0
+    region_end = 0
 
     for idx in range(end - start):
 
         #a trusted region has been found
         if base_count >= kmer_len and solids[idx] == -1:
 
-            region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, prefix
+            region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end 
             region_start = idx + 1
+            region_end = idx + 1
             current_indices_idx += 1
-            prefix = idx + 1
             base_count = 0
 
         #reset the region start since its left part is not a trusted region anymore
         if solids[idx] == -1 and base_count < kmer_len:
             region_start = idx + 1
-            prefix = idx + 1
+            region_end = idx + 1
             base_count = 0
 
         if solids[idx] == 1:
-            prefix = idx
+            region_end = idx
             base_count += 1
 
     #ending
     if base_count >= kmer_len:
 
-        region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, prefix
+        region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end
         current_indices_idx += 1
 
     #this will be the length or the number of trusted regions
@@ -408,7 +425,7 @@ def copy_solids(threadIdx, solids, arr):
 
 #no implementation for tracking how many corrections are done for each kmers in the read
 @cuda.jit
-def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter):
+def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter, solids_after, not_corrected_counter):
     threadIdx = cuda.grid(1) 
 
     if threadIdx < offsets.shape[0]:
@@ -418,15 +435,23 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter)
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         solids = cuda.local.array(MAX_LEN, dtype='int8')
         alternatives = cuda.local.array((4, 2), dtype='uint32')
+        corrected_solids = cuda.local.array(MAX_LEN, dtype='int8')
 
         for i in range(end - start):
             solids[i] = -1
 
+        for i in range(end - start):
+            corrected_solids[i] = -1
+
         bases = cuda.local.array(5, dtype='uint8')
+
+        for i in range(5):
+            bases[i] = i + 1
+
         regions_count = identify_trusted_regions(start, end, kmer_spectrum, reads_1d, kmer_len, region_indices, solids)
 
-        copy_solids(threadIdx, solids, solids_counter)
 
+        copy_solids(threadIdx, solids, solids_counter)
         #fails to correct the read does not have a trusted region (how about regions that has no error?)
         if regions_count == 0:
             return
@@ -439,6 +464,7 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter)
                 region_end = region_indices[region][1]
                 while region_end  != ((end - start) - 1):
                     if not correct_read_one_sided_right(reads_1d, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
+                        not_corrected_counter[threadIdx] += 1
                         break
                     else:
                         region_end += 1
@@ -451,6 +477,7 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter)
 
                 while region_end != (next_region_start - 1):
                     if not correct_read_one_sided_right(reads_1d, start, region_end, kmer_spectrum, kmer_len, bases, alternatives):
+                        not_corrected_counter[threadIdx] += 1
                         break
                     else:
                         region_end += 1
@@ -465,6 +492,7 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter)
                 #while we are not at the first base of the read
                 while region_start != 0:
                     if not correct_read_one_sided_left(reads_1d, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
+                        not_corrected_counter[threadIdx] += 1
                         break
                     else:
                         region_start -= 1
@@ -476,12 +504,14 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter)
                 while region_start - 1 != (prev_region_end):
 
                     if not correct_read_one_sided_left(reads_1d, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
+                        not_corrected_counter[threadIdx] += 1
                         break
                     else:
                         region_start -= 1
                         region_indices[region][0] = region_start
 
-
+        identify_solid_bases(reads_1d, start, end, kmer_len, kmer_spectrum, corrected_solids)
+        copy_solids(threadIdx, corrected_solids, solids_after)
 @ray.remote(num_gpus=1, num_cpus=1)
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
@@ -552,6 +582,13 @@ def calculatecutoff_threshold(occurence_data, bin):
     return math.ceil(bin_centers[min_density_idx])
 
 @ray.remote(num_cpus=1) 
+def print_num_not_corrected(not_corrected_counter):
+    count = 0
+    for nothing in not_corrected_counter:
+        if nothing > 0:
+            count += nothing
+    print(count)
+@ray.remote(num_cpus=1) 
 def batch_printing(batch_data):
 
     for idx, error_kmers in enumerate(batch_data):
@@ -617,20 +654,20 @@ if __name__ == '__main__':
         
 
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
-        kmer_np = filtered_kmer_df['translated'].to_numpy() 
+        kmer_np = filtered_kmer_df.to_numpy() 
         # help(reads_1d, kmer_len, offsets)
-        [corrected_counter, result_counter, solids] = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len))
-
+        [corrected_counter, result_counter, solids, not_corrected_counter] = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
         batch_size = len(corrected_counter) // cpus_detected
-
+        
         # print("Result counter :")
         # ray.get([batch_printing.remote((result_counter[batch_len: batch_len + batch_size]), kmer_np) for batch_len in range(0, len(result_counter), batch_size)])
+        ray.get([print_num_not_corrected.remote((not_corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(not_corrected_counter), batch_size)])
 
         # print("Corrected counter :")
         # ray.get([batch_printing_counter.remote((corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(corrected_counter), batch_size)])
-        print("Solids counter :")
-        ray.get([batch_printing.remote((solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(solids), batch_size)])
+        # print("Solids counter :")
+        # ray.get([batch_printing.remote((solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(solids), batch_size)])
         #visuals
         # plt.figure(figsize=(12, 6))
         # sns.histplot(pd_kmers['count'], bins=60, kde=True, color='blue', alpha=0.7)
