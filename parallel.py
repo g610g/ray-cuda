@@ -2,7 +2,7 @@ import time
 import os
 import sys
 import math
-from numpy.core.multiarray import dtype
+from numba.cuda.device_init import threadIdx
 import ray
 import cudf
 import numpy as np
@@ -177,7 +177,55 @@ def correct_reads(idx, read, kmer_len,kmer_spectrum, corrected_counter, bases, l
         counter += 1
 
     return counter
+
+@cuda.jit(device=True)
+def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
+
+    curr_kmer = read[curr_idx: curr_idx + kmer_len]
+    for idx in range(kmer_len):
+        for base in bases:
+            curr_kmer[idx] = base
+            trans_curr_kmer = transform_to_key(curr_kmer, kmer_len)
+
+            #add a vote to the corresponding index
+            if in_spectrum(kmer_spectrum, trans_curr_kmer):
+                vm[base - 1][(curr_idx - start) + idx] += 1
+
+    #i cant see the produced voting matrix
+#the voting refinement
+@cuda.jit
+def voting_algo(dev_reads, offsets, kmer_spectrum, kmer_len):
+    threadIdx = cuda.grid(1)
+
+    if threadIdx <= offsets.shape[0]:
+
+        MAX_LEN = 256 
+        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        vm = cuda.local.array((4, MAX_LEN), 'uint16')
+        bases = cuda.local.array(4, 'uint8')
+
+        for idx in range(4):
+            bases[idx] = idx + 1
+
+        for idx in range(start, end - (kmer_len - 1)):
+            curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
+
+            #invoke voting if the kmer is not in spectrum
+            if not in_spectrum(kmer_spectrum, curr_kmer):
+                invoke_voting(vm, kmer_spectrum, bases, kmer_len, idx, dev_reads, start)
+
+
 #marks the base index as 1 if erroneous. 0 otherwise
+@cuda.jit
+def benchmark_solid_bases(dev_reads, dev_kmer_spectrum, solids, dev_offsets, kmer_len):
+    threadIdx = cuda.grid(1)
+    if threadIdx <= dev_offsets.shape[0]:
+        start, end = dev_offsets[threadIdx][0], dev_offsets[threadIdx][1]
+
+        for i in range(end - start):
+            solids[threadIdx][i] = -1
+
+        identify_solid_bases(dev_reads, start, end, kmer_len, dev_kmer_spectrum, solids[threadIdx])
 
 @cuda.jit
 def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_counter):
@@ -200,14 +248,7 @@ def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_c
             bases[i] = i + 1
 
         #identify whether base is solid or not
-        for idx in range(start, end - (kmer_len - 1)):
-            curr_kmer = transform_to_key(read[idx:idx + kmer_len], kmer_len)
-
-            #set the bases as solids
-            if in_spectrum(kmer_spectrum, curr_kmer):
-
-                # mark_solids_array(solids, idx, idx + kmer_len, start)
-                mark_solids_array(solids, idx - start,  (idx + kmer_len) - start)
+        identify_solid_bases(read, start, end, kmer_len, kmer_spectrum, solids)
 
         #used for debugging
         for idx in range(end - start):
@@ -232,7 +273,7 @@ def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_c
                 pass
 
 @ray.remote(num_gpus=1, num_cpus=1)
-def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
+def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter, num_cpus):
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
@@ -251,18 +292,36 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len):
     tbp = 1024
     bpg = (offsets.shape[0] + tbp) // tbp
 
-    two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
+    #benchmarking only
+    print("Before two sided")
+    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+    h_solids = dev_solids.copy_to_host()
+    batch_size = (len(h_solids) // num_cpus) - 4
+    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
 
-    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
+    for _ in range(two_sided_iter):
 
+        two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
+
+    print("After two sided")
+    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+    h_solids = dev_solids.copy_to_host()
+    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
+
+    for _ in range(one_sided_iter):
+        one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
+
+    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+    h_solids = dev_solids.copy_to_host()
+    print("After one sided")
+    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
+    
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the kernel:  {transfer_time} ms")
 
-    h_corrected_counter = dev_corrected_counter.copy_to_host()
     cuda.profile_stop()
-    return [h_corrected_counter ,dev_result.copy_to_host(), dev_solids_after.copy_to_host(), not_corrected_counter.copy_to_host()]
 
 @cuda.jit(device=True)
 def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
@@ -359,28 +418,20 @@ def correct_read_one_sided_right(reads, start, region_end, kmer_spectrum, kmer_l
 
 @cuda.jit(device=True)
 def identify_solid_bases(reads, start, end, kmer_len, kmer_spectrum, solids):
+
     for idx in range(start, end - (kmer_len - 1)):
         curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
 
         #set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
 
-            # mark_solids_array(solids, idx, idx + kmer_len, start)
             mark_solids_array(solids, idx - start,  (idx + kmer_len) - start)
 
 #identifying the trusted region in the read and store it into the 2d array
 @cuda.jit(device=True)
 def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_indices, solids):
 
-    #we can use the solids array from the two sided (not yet done)
-    for idx in range(start, end - (kmer_len - 1)):
-            curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
-
-            #set the bases as solids
-            if in_spectrum(kmer_spectrum, curr_kmer):
-
-                # mark_solids_array(solids, idx, idx + kmer_len, start)
-                mark_solids_array(solids, idx - start,  (idx + kmer_len) - start)
+    identify_solid_bases(reads, start, end, kmer_len, kmer_spectrum, solids)
 
     current_indices_idx = 0
     base_count = 0
@@ -449,7 +500,6 @@ def one_sided_kernel(kmer_spectrum, reads_1d, offsets, kmer_len, solids_counter,
             bases[i] = i + 1
 
         regions_count = identify_trusted_regions(start, end, kmer_spectrum, reads_1d, kmer_len, region_indices, solids)
-
 
         copy_solids(threadIdx, solids, solids_counter)
         #fails to correct the read does not have a trusted region (how about regions that has no error?)
@@ -581,6 +631,16 @@ def calculatecutoff_threshold(occurence_data, bin):
             min_density_idx = idx
     return math.ceil(bin_centers[min_density_idx])
 
+#returns then number of error bases
+@ray.remote(num_cpus=1) 
+def count_error_reads(reads):
+    count = 0
+    for read in reads:
+        for base in read:
+            if base == -1:
+                count += 1
+                continue
+    return count
 @ray.remote(num_cpus=1) 
 def print_num_not_corrected(not_corrected_counter):
     count = 0
@@ -621,6 +681,7 @@ def help(read, kmer_len, offsets):
             if len(left_portion) != kmer_len or len(right_portion) != kmer_len:
 
                 print("Naay extracted nga below kmer len")
+
 @ray.remote(num_gpus=1) 
 class GPUPing:
     def ping(self):
@@ -651,18 +712,22 @@ if __name__ == '__main__':
         
         cutoff_threshold = calculatecutoff_threshold(occurence_data, 60)
         # print(f"cutoff threshold: {cutoff_threshold}")
-        
 
+    
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df.to_numpy() 
         # help(reads_1d, kmer_len, offsets)
-        [corrected_counter, result_counter, solids, not_corrected_counter] = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len))
+        ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len, 2, 4, cpus_detected))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
-        batch_size = len(corrected_counter) // cpus_detected
         
         # print("Result counter :")
         # ray.get([batch_printing.remote((result_counter[batch_len: batch_len + batch_size]), kmer_np) for batch_len in range(0, len(result_counter), batch_size)])
-        ray.get([print_num_not_corrected.remote((not_corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(not_corrected_counter), batch_size)])
+        # ray.get([print_num_not_corrected.remote((not_corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(not_corrected_counter), batch_size)])
+        # print("Before")
+        #print(sum(ray.get([count_error_reads.remote((before_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(before_solids), batch_size)]))) 
+        #
+        # print("After")
+        # print(sum(ray.get([count_error_reads.remote((after_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(after_solids), batch_size)])) ) 
 
         # print("Corrected counter :")
         # ray.get([batch_printing_counter.remote((corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(corrected_counter), batch_size)])
