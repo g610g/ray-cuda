@@ -11,7 +11,6 @@ from Bio import SeqIO
 # import seaborn as sns
 # import matplotlib.pyplot as plt
 import pandas as pd
-
 ray.init()
 
 @ray.remote(num_cpus=1)
@@ -297,7 +296,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
     h_solids = dev_solids.copy_to_host()
     batch_size = (len(h_solids) // num_cpus) - 4
-    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
+    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
 
     for _ in range(two_sided_iter):
 
@@ -306,7 +305,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     print("After two sided")
     benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
     h_solids = dev_solids.copy_to_host()
-    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
+    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
 
     for _ in range(one_sided_iter):
         one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
@@ -314,8 +313,8 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
     h_solids = dev_solids.copy_to_host()
     print("After one sided")
-    print(sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))) 
-    
+    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
+     
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
