@@ -1,0 +1,24 @@
+
+#shell
+
+total_reads=$(samtools view -c alignment_output.sam)
+uniquely_mapped_reads=$(samtools view -c -q 1 alignment_output.sam)
+percentage=$(echo "scale=2; ($uniquely_mapped_reads / $total_reads) * 100" | bc)
+echo "Percentage of Uniquely Mapped Reads: $percentage%"
+
+
+#art illumina command for generating simulated single end base
+
+art_illumina -ss HS25 -i ecoli_k12_mg1655.fasta -l 100 -f 30 -o ecoli_30x_1perc_single -qL 20 -qU 40
+
+#2%
+art_illumina -ss HS25 -i ecoli_k12_mg1655.fasta -l 100 -f 30 -o ecoli_30x_2perc_single -qL 17 -qU 40
+
+#3%
+art_illumina -ss HS25 -i ecoli_k12_mg1655.fasta -l 100 -f 30 -o ecoli_30x_3perc_single -qL 15 -qU 40
+
+
+#for aligning reads into its reference genome using BWA (Burrows Wheeler Alignment)
+bwa mem GCF_000005845.2_ASM584v2_genomic.fna  ecoli_30x_2perc_single_corrected.fastq | samtools view -b -o ecoli_30x_2perc_single_corrected.bam
+
+

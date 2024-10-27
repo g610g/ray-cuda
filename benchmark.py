@@ -8,7 +8,7 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
     original_reads = pysam.AlignmentFile(original_bam, "rb")
     corrected_reads = pysam.AlignmentFile(corrected_bam, "rb")
 
-    tp, fp, tn, fn = 0, 0, 0, 0
+    tp, fp, fn = 0, 0, 0 
 
     # Iterate over each original and corrected read pair
     for original, corrected in zip(original_reads.fetch(), corrected_reads.fetch()):
@@ -21,19 +21,13 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
         ref_seq = reference.fetch(original.reference_name, original.reference_start, original.reference_end)
 
         # Compute TP, FP, TN, FN
-
-        for pos in original_positions.intersection(corrected_positions):
-
+        for pos in original_positions.intersection(corrected_positions) :
             #only checking the pair of reads that are of same length
-            if pos in original_positions and pos in corrected_positions and (corrected.reference_end - corrected.reference_start) == (original.reference_end - original.reference_start):
+            # if pos in original_positions and pos in corrected_positions and (original.reference_end - original.reference_start) == (corrected.reference_end - corrected.reference_start):
+            if pos in original_positions and pos in corrected_positions:
                 #the relative indices for the reads
                 original_index = pos - original.reference_start
                 corrected_index = pos - corrected.reference_start
-
-                # print(f"original read starting {(original.reference_start)}")
-                # print(f"original read ending {(original.reference_end)}")
-                # print(f"corrected read starting {(corrected.reference_start)}")
-                # print(f"corrected read ending {(corrected.reference_end)}")
 
                 if (0 <= original_index < len(original.query_sequence)) and (0 <= original_index < len(ref_seq)) and (0 <= corrected_index < len(corrected.query_sequence)) and (0 <= corrected_index < len(ref_seq)):
 
@@ -41,15 +35,15 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
                     original_is_error = original.query_sequence[original_index] != ref_seq[original_index]
 
                     # Track if the corrected read fixed the error compared to the reference
-                    corrected_is_correct = corrected.query_sequence[corrected_index] == ref_seq[corrected_index]
+                    corrected_is_correct = corrected.query_sequence[corrected_index] == ref_seq[original_index]
 
                     if original_is_error and corrected_is_correct:
                         tp += 1
-                    elif not original_is_error and corrected_is_correct or original_is_error and not corrected_is_correct:
+                    elif original_is_error and not corrected_is_correct:
                         fn += 1  # True Negative: no error originally, remains correct
                     elif not original_is_error and not corrected_is_correct:
                         fp += 1  # False Positive: was correct, incorrectly changed
-            
+
         print(f"True Positive:{tp}, False Positive:{fp}, False Negative: {fn}")
 
     # Close files
@@ -60,8 +54,8 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
 
 # Example usage
 reference = "GCF_000005845.2_ASM584v2_genomic.fna"
-original = "aligned-sort.bam"
-corrected = "corrected_reads_sorted.bam"
+original = "ecoli_30x_3perc_single_uncorrected_sorted.bam"
+corrected = "ecoli_30x_3perc_single_corrected_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)
