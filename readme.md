@@ -25,4 +25,4 @@
 
 - Still havent transformed corrected reads into a Bio.Seq.Seq class and then putting it back to its corresponding SeqRecord object
 
--
+- Deez nuts
