@@ -177,6 +177,22 @@ def correct_reads(idx, read, kmer_len,kmer_spectrum, corrected_counter, bases, l
 
     return counter
 
+#not sure yet
+@cuda.jit(device=True)
+def apply_vm_result(vm, read, start):
+
+    #foreach base position, we check if there are bases that have values greater than 0 
+    #apply that base if its value is greater than 0, otherwise, just ignore and retain the original base
+    for read_position in range(vm.shape[1]):
+        current_base = -1
+        max_vote = 0
+        for base in range(4):
+            if vm[base][read_position] > max_vote:
+                current_base = base + 1
+                max_vote = vm[base][read_position]
+        if max_vote != 0 and current_base != -1:
+            read[start + read_position] = current_base
+
 @cuda.jit(device=True)
 def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
 
@@ -190,15 +206,15 @@ def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
             if in_spectrum(kmer_spectrum, trans_curr_kmer):
                 vm[base - 1][(curr_idx - start) + idx] += 1
 
-    #i cant see the produced voting matrix
+    
 #the voting refinement
 @cuda.jit
 def voting_algo(dev_reads, offsets, kmer_spectrum, kmer_len):
     threadIdx = cuda.grid(1)
 
-    if threadIdx <= offsets.shape[0]:
+    if threadIdx < offsets.shape[0]:
 
-        MAX_LEN = 256 
+        MAX_LEN = 150
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         vm = cuda.local.array((4, MAX_LEN), 'uint16')
         bases = cuda.local.array(4, 'uint8')
@@ -207,12 +223,14 @@ def voting_algo(dev_reads, offsets, kmer_spectrum, kmer_len):
             bases[idx] = idx + 1
 
         for idx in range(start, end - (kmer_len - 1)):
-            curr_kmer = transform_to_key(reads[idx:idx + kmer_len], kmer_len)
+            curr_kmer = transform_to_key(dev_reads[idx:idx + kmer_len], kmer_len)
 
             #invoke voting if the kmer is not in spectrum
             if not in_spectrum(kmer_spectrum, curr_kmer):
                 invoke_voting(vm, kmer_spectrum, bases, kmer_len, idx, dev_reads, start)
 
+        #apply the result of the vm into the reads
+        apply_vm_result(vm, dev_reads, start)
 
 #marks the base index as 1 if erroneous. 0 otherwise
 @cuda.jit
@@ -271,8 +289,8 @@ def two_sided_kernel(kmer_spectrum, read, offsets, result, kmer_len, corrected_c
             if solids[base_idx] == -1 and base_idx > (end - start) - kmer_len:
                 pass
 
-@ray.remote(num_gpus=1, num_cpus=1)
-def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter, num_cpus):
+@ray.remote(num_gpus=1, num_cpus=2)
+def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter):
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
@@ -292,36 +310,35 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     bpg = (offsets.shape[0] + tbp) // tbp
 
     #benchmarking only
-    print("Before two sided")
-    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
-    h_solids = dev_solids.copy_to_host()
-    batch_size = (len(h_solids) // num_cpus) - 4
-    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
+    # print("Before two sided")
+    # benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+
+    # h_solids = dev_solids.copy_to_host()
+    # batch_size = (len(h_solids) // num_cpus) - 4
+    # print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
 
     for _ in range(two_sided_iter):
-
         two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len, dev_corrected_counter)
-
-    print("After two sided")
-    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
-    h_solids = dev_solids.copy_to_host()
-    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
-
+    # print("After two sided")
+    # benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+    # h_solids = dev_solids.copy_to_host()
+    # print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
+    #
     for _ in range(one_sided_iter):
         one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
-
-    benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
-    h_solids = dev_solids.copy_to_host()
-    print("After one sided")
-    print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
-     
+        voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
+    
+    # benchmark_solid_bases[bpg, tbp](dev_reads_1d, dev_kmer_spectrum, dev_solids, dev_offsets, kmer_len)
+    # h_solids = dev_solids.copy_to_host()
+    # print("After one sided")
+    # print(f"{sum(ray.get([count_error_reads.remote((h_solids[batch_len: batch_len + batch_size])) for batch_len in range(0, len(h_solids), batch_size)]))} base errors found") 
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-
+    return dev_reads_1d.copy_to_host()
 @cuda.jit(device=True)
 def correct_read_one_sided_left(reads, start, region_start, kmer_spectrum, kmer_len, bases, alternatives):
     possibility = 0
@@ -681,6 +698,14 @@ def help(read, kmer_len, offsets):
 
                 print("Naay extracted nga below kmer len")
 
+@ray.remote(num_cpus=1)
+def give_slices(reads, offsets):
+    return ([reads[start:end] for start, end in offsets])
+#a method to turn back string into biopython sequence
+@ray.remote(num_cpus=1)
+def back_2_sequence():
+    pass
+
 @ray.remote(num_gpus=1) 
 class GPUPing:
     def ping(self):
@@ -701,6 +726,7 @@ if __name__ == '__main__':
 
         kmer_len = 6
         cpus_detected = int(ray.cluster_resources()['CPU'])
+
         gpu_extractor = KmerExtractorGPU.remote(kmer_len)
         kmer_occurences = ray.get(gpu_extractor.transform_reads.remote(reads))
         offsets = ray.get(gpu_extractor.get_offsets.remote(reads))
@@ -712,13 +738,18 @@ if __name__ == '__main__':
         cutoff_threshold = calculatecutoff_threshold(occurence_data, 60)
         # print(f"cutoff threshold: {cutoff_threshold}")
 
-    
+        batch_size = offsets.shape[0] // cpus_detected
+
+
         filtered_kmer_df = kmer_occurences[kmer_occurences['count'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df.to_numpy() 
         # help(reads_1d, kmer_len, offsets)
-        ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len, 2, 4, cpus_detected))
+        corrected_reads = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len, 2, 4))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
         
+
+        reads_result = ray.get([give_slices.remote(corrected_reads, offsets[relative_start: relative_start + batch_size]) for relative_start in range(0, len(offsets), batch_size)])
+        print(reads_result)
         # print("Result counter :")
         # ray.get([batch_printing.remote((result_counter[batch_len: batch_len + batch_size]), kmer_np) for batch_len in range(0, len(result_counter), batch_size)])
         # ray.get([print_num_not_corrected.remote((not_corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(not_corrected_counter), batch_size)])

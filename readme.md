@@ -1,12 +1,28 @@
 # TODOS
 
-- Tracking of the number of corrections made for each kmer and rolling back each corrections made in a kmer if the corrections made is > max number of corrections
 - The program should be able to accept configs or environment variables
-- Two sided and one sided should be done on an interative approach
+
 - Distribute the reads near even to the available GPU for a more faster execution time of the multistage on the whole dataset
-- 
+
+- Produce accuracy results from our correction method.
+
+
+
+ 
 # FINISHED
 
 - Core implementation of one sided and two sided looks good
 - The two multistages does corrects and mutates the reads
 - Implemented on a single GPU
+- Voting based refinement implementation
+
+# PROBLEM
+- How to effieciently transform back jagged array into a list of reads
+
+- How can we do it by leveraging the power of cudf.
+
+- How to create a dataframe where each row is the array from jagged array created by referencing from the offsets 2d array
+
+- Still havent transformed corrected reads into a Bio.Seq.Seq class and then putting it back to its corresponding SeqRecord object
+
+-
