@@ -7,7 +7,7 @@ import ray
 import cudf
 import numpy as np
 from numba import cuda
-from Bio import SeqIO
+from Bio import SeqIO,Seq
 # import seaborn as sns
 # import matplotlib.pyplot as plt
 import pandas as pd
@@ -698,14 +698,59 @@ def help(read, kmer_len, offsets):
 
                 print("Naay extracted nga below kmer len")
 
-@ray.remote(num_cpus=1)
-def give_slices(reads, offsets):
-    return ([reads[start:end] for start, end in offsets])
-#a method to turn back string into biopython sequence
-@ray.remote(num_cpus=1)
-def back_2_sequence():
-    pass
+#a kernel that brings back the sequences by using the offsets array
+#doing this in a kernel since I havent found any cudf methods that transform my jagged array into a segments known as reads
+#it has a drawback where if the length of the read is greater than MAXLEN, kernel will produce incorrect results
+@cuda.jit
+def back_sequence_kernel(reads, offsets, reads_result):
+    threadIdx = cuda.grid(1)
+    MAX_LEN = 300
+    read_segment = cuda.local.array(MAX_LEN, dtype='uint8')
+    if threadIdx < offsets.shape[0]:
+        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        for idx in range(start, end):
+            read_segment[idx - start] = reads[idx]
 
+        #copy the assigned read for this thread into the 2d reads_result
+        for idx in range(end - start):
+            reads_result[threadIdx][idx] = read_segment[idx]
+
+def md_array_to_rows_as_strings(md_df):
+    translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
+    rows_as_lists = md_df.to_pandas().apply(lambda row: row.tolist(), axis=1)
+    non_zero_rows_as_lists = rows_as_lists.apply(lambda lst: [x for x in lst if x != 0])
+    rows_as_strings = non_zero_rows_as_lists.apply(lambda lst: ''.join(map(str, lst)))
+
+    cudf_rows_as_strings = cudf.Series(rows_as_strings)
+    translated_strs = cudf_rows_as_strings.str.translate(translation_table)
+    return translated_strs
+#a method to turn back string into biopython sequence
+@ray.remote(num_cpus=1,num_gpus=1)
+def back_2_sequence(reads,offsets):
+
+    offsets_df = cudf.DataFrame({"start":offsets[:,0], "end":offsets[:,1]})
+    offsets_df['length'] = offsets_df['end'] - offsets_df['start']
+    max_segment_length = offsets_df['length'].max()
+    
+    dev_reads = cuda.to_device(reads)
+    dev_offsets = cuda.to_device(offsets)
+    dev_reads_result = cuda.device_array((offsets.shape[0], max_segment_length), dtype='uint8')
+    tpb = 1024
+    bpg = (offsets.shape[0] + tpb) // tpb
+
+    back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets , dev_reads_result)
+
+    read_result_df = cudf.DataFrame(dev_reads_result)
+
+    translated_strs = md_array_to_rows_as_strings(read_result_df) 
+    reads = translated_strs.to_arrow().to_pylist()
+    return reads 
+
+@ray.remote(num_cpus=1) 
+def create_sequence_objects(reads_batch, seq_records_batch):
+    for read, seq_record in zip(reads_batch, seq_records_batch):
+        seq_record.seq = Seq.Seq(read)
+    return seq_records_batch
 @ray.remote(num_gpus=1) 
 class GPUPing:
     def ping(self):
@@ -720,9 +765,12 @@ if __name__ == '__main__':
             print(usage)
             exit(1)
 
+        #does converting it into list and storing into memory has some implications as compared to represent it as a generator?
         with open(sys.argv[1]) as handle:
             fastq_data = SeqIO.parse(handle, 'fastq')
-            reads = [str(data.seq) for data in fastq_data]
+            fastq_data_list = list(fastq_data)
+            reads = [str(data.seq) for data in fastq_data_list]
+
 
         kmer_len = 6
         cpus_detected = int(ray.cluster_resources()['CPU'])
@@ -746,10 +794,20 @@ if __name__ == '__main__':
         # help(reads_1d, kmer_len, offsets)
         corrected_reads = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len, 2, 4))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
-        
 
-        reads_result = ray.get([give_slices.remote(corrected_reads, offsets[relative_start: relative_start + batch_size]) for relative_start in range(0, len(offsets), batch_size)])
-        print(reads_result)
+        new_sequences = list()
+        print(new_sequences)
+        corrected_reads_array = ray.get(back_2_sequence.remote(corrected_reads, offsets))
+        # for relative_idx in range(0, len(fastq_data_list), batch_size):
+
+        #spread operator baby
+        #probably the order is not the same as the original order
+        new_sequences = [ray.get(create_sequence_objects.remote(corrected_reads_array[relative_idx:relative_idx + batch_size], fastq_data_list[relative_idx:relative_idx + batch_size])) for relative_idx in range(0, len(fastq_data_list), batch_size)]
+        flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
+        print(type(flattened_sequences[0]))
+        with open("genetic-assets/corrected_output.fastq", "w") as output_handle:
+            SeqIO.write(flattened_sequences, output_handle, 'fastq')
+        # ray.get(back_2_sequence.remote(corrected_reads, offsets))
         # print("Result counter :")
         # ray.get([batch_printing.remote((result_counter[batch_len: batch_len + batch_size]), kmer_np) for batch_len in range(0, len(result_counter), batch_size)])
         # ray.get([print_num_not_corrected.remote((not_corrected_counter[batch_len: batch_len + batch_size])) for batch_len in range(0, len(not_corrected_counter), batch_size)])
