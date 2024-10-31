@@ -53,9 +53,9 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
     return {"TP": tp, "FP": fp, "FN": fn}
 
 # Example usage
-reference = "GCF_000005845.2_ASM584v2_genomic.fna"
-original = "ecoli_30x_1perc_single_uncorrected_aligned_sorted.bam"
-corrected = "corrected_output_sorted.bam"
+reference = "genetic-assets/GCF_000005845.2_ASM584v2_genomic.fna"
+original = "genetic-assets/ecoli_30x_1perc_single_uncorrected_aligned_sorted.bam"
+corrected = "genetic-assets/corrected_output_aligned_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)
