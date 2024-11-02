@@ -34,8 +34,6 @@ class KmerExtractorGPU:
 
         read_df['translated'] = read_df['reads'].str.translate(self.translation_table)
         
-        # print(read_df['translated'].str.len())
-        
         ngram_kmers = read_df['translated'].str.character_ngrams(self.kmer_length, True)
 
         exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
