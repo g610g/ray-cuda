@@ -1,16 +1,35 @@
 from numba import cuda
 import ray
-#the linear search for kmer, we can use binary search or other sarch for this
+
+
+#this is a bottleneck for our current implementation.
 @cuda.jit(device=True)
 def in_spectrum(spectrum, kmer):
-    for k in spectrum:
-        if kmer == k[0]:
-            return True
+    if binary_search_2d(spectrum, kmer) != -1:
+        return True
+
     return False
 
 @cuda.jit(device=True)
+def binary_search_2d(sorted_arr, needle):
+    sorted_arr_len = len(sorted_arr)
+    right = sorted_arr_len - 1
+    left = 0
+
+    while(left <= right):
+        middle  = (left + right) // 2
+        if sorted_arr[middle][0] == needle:
+            return middle
+
+        elif sorted_arr[middle][0] > needle:
+            right = middle - 1
+
+        elif sorted_arr[middle][0] < needle:
+            left = middle + 1
+    return -1
+
+@cuda.jit(device=True)
 def transform_to_key(ascii_kmer, len):
-    return 2423
     multiplier = 1
     key = 0
     while(len != 0):

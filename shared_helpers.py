@@ -2,14 +2,15 @@ from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array
 
 @cuda.jit(device=True)
-def identify_solid_bases(shared_reads, start, end, kmer_len, kmer_spectrum, solids, threadIdx_block):
+def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
 
     for idx in range(0, (end - start) - (kmer_len - 1)):
-        curr_kmer = transform_to_key(shared_reads[threadIdx_block][idx:idx + kmer_len], kmer_len)
+        ascii_kmer = local_reads[idx:idx + kmer_len]
+
+        curr_kmer = transform_to_key(ascii_kmer, kmer_len)
 
         #set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
-
             mark_solids_array(solids, idx , (idx + kmer_len))
 
 @cuda.jit(device=True)

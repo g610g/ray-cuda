@@ -23,7 +23,7 @@ class KmerExtractorGPU:
 
     def transform_reads_2_1d(self, reads):
         read_df = cudf.DataFrame({'reads':reads})
-        return read_df['reads'].str.findall('.').explode().str.translate(self.translation_table).astype('uint64').to_numpy()
+        return read_df['reads'].str.findall('.').explode().str.translate(self.translation_table).astype('uint8').to_numpy()
 
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({'reads':reads})
@@ -65,10 +65,10 @@ def calculatecutoff_threshold(occurence_data, bin):
 
     hist_vals, bin_edges = np.histogram(occurence_data, bins=bin)
 
-    print(hist_vals)
+    print((hist_vals[:30]))
     bin_centers = (0.5 * (bin_edges[1:] + bin_edges[:-1]))
 
-    print(bin_centers)
+    print(bin_centers[:30])
 
     valley_index = 0
 
@@ -89,4 +89,8 @@ def calculatecutoff_threshold(occurence_data, bin):
         if hist_vals[idx] <= hist_vals[min_density_idx]:
             min_density_idx = idx
     return math.ceil(bin_centers[min_density_idx])
-
+# def manual_histogram_calculation(occurence_data, max_multiplicity, min_multiplicity):
+#
+#     multiplicities = list(range(min_multiplicity, max_multiplicity))
+#     for occurence in occurence_data:
+#        pass 

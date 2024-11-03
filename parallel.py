@@ -6,7 +6,7 @@ import cudf
 import numpy as np
 from numba import cuda
 from Bio import SeqIO,Seq
-from core_correction import *
+from shared_core_correction import *
 from voting import *
 from kmer import *
 # import seaborn as sns
@@ -66,26 +66,26 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     start = cuda.event()
     end = cuda.event()
     start.record()
-
+    print(kmer_spectrum.shape[0])
     #transffering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     dev_result = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype='uint64'))
-    dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
+    # dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype='int8'))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype='int8'))
     not_corrected_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype='int16'))
     #allocating gpu threads
-    tbp = 1024
-    bpg = (offsets.shape[0] + tbp) // tbp
+    tbp = 512
+    bpg = offsets.shape[0] // tbp
 
     for _ in range(two_sided_iter):
         two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len)
-
-    for _ in range(one_sided_iter):
-        one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
-        voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
+    #
+    # for _ in range(one_sided_iter):
+    #     one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
+        #voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
 
     end.record()
     end.synchronize()
@@ -179,9 +179,11 @@ if __name__ == '__main__':
             fastq_data = SeqIO.parse(handle, 'fastq')
             fastq_data_list = list(fastq_data)
             reads = [str(data.seq) for data in fastq_data_list]
+        
+        transform_to_string_end_time = time.perf_counter()
+        print(f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}")
 
-
-        kmer_len = 5
+        kmer_len = 13
         cpus_detected = int(ray.cluster_resources()['CPU'])
 
         gpu_extractor = KmerExtractorGPU.remote(kmer_len)
@@ -198,30 +200,42 @@ if __name__ == '__main__':
         print("Done removing unique kmers")
         occurence_data = non_unique_kmers['multiplicity'].to_numpy()
 
-        print(non_unique_kmers)
+        reversed_occurence_data = occurence_data[::-1]
+        print(reversed_occurence_data[:200])
         cutoff_threshold = calculatecutoff_threshold(occurence_data, occurence_data[0] // 2)
         print(f"cutoff threshold: {cutoff_threshold}")
 
-        batch_size = offsets.shape[0] // cpus_detected
+        batch_size =  len(offsets)// cpus_detected
 
+        
         filtered_kmer_df = non_unique_kmers[non_unique_kmers['multiplicity'] >= cutoff_threshold]
-        kmer_np = filtered_kmer_df.to_numpy() 
-        corrected_reads = ray.get(remote_two_sided.remote(kmer_np, reads_1d, offsets, kmer_len, 2, 2))
+        kmer_np = filtered_kmer_df.astype('uint64').to_numpy() 
+        sort_start_time = time.perf_counter()
+
+        #will this give me more overhead? :((
+        sorted_kmer_np = sorted_arr = kmer_np[kmer_np[:, 0].argsort()]
+        sort_end_time =time.perf_counter()
+        print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
+        print(sorted_kmer_np)
+        corrected_reads = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
 
+        back_sequence_start_time = time.perf_counter()
         new_sequences = list()
         print(new_sequences)
         corrected_reads_array = ray.get(back_2_sequence.remote(corrected_reads, offsets))
+        back_sequence_end_time= time.perf_counter()
+        print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
         # for relative_idx in range(0, len(fastq_data_list), batch_size):
 
         #spread operator baby
         #probably the order is not the same as the original order
-        new_sequences = [ray.get(create_sequence_objects.remote(corrected_reads_array[relative_idx:relative_idx + batch_size], fastq_data_list[relative_idx:relative_idx + batch_size])) for relative_idx in range(0, len(fastq_data_list), batch_size)]
-        
-        #flattens the array
-        flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
-        with open("genetic-assets/corrected_output.fastq", "w") as output_handle:
-            SeqIO.write(flattened_sequences, output_handle, 'fastq')
+        # new_sequences = [ray.get(create_sequence_objects.remote(corrected_reads_array[relative_idx:relative_idx + batch_size], fastq_data_list[relative_idx:relative_idx + batch_size])) for relative_idx in range(0, len(fastq_data_list), batch_size)]
+        #
+        # #flattens the array
+        # flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
+        # with open("genetic-assets/corrected_output.fastq", "w") as output_handle:
+        #     SeqIO.write(flattened_sequences, output_handle, 'fastq')
 
         #visuals
         # plt.figure(figsize=(12, 6))
@@ -234,4 +248,5 @@ if __name__ == '__main__':
 
         end_time = time.perf_counter()
         print(f"Elapsed time is {end_time - start_time}")
+     
 
