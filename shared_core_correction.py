@@ -18,11 +18,9 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, result, kmer_len):
         solids = cuda.local.array(MAX_LEN, dtype='int8')
         local_reads = cuda.local.array(300, dtype='uint8')  
 
-
-        #copy reads in global memory to shared memory
+        #we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(0, end - start):
             local_reads[idx] = reads[idx + start]
-
 
         for i in range(end - start):
             solids[i] = -1
@@ -55,11 +53,10 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, result, kmer_len):
             if solids[base_idx] == -1 and base_idx > (end - start) - kmer_len:
                 pass
 
-        #copy the reads from shared memory back to the global memory
+        #copy the reads from private memory back to the global memory
         for idx in range(0, end - start):
             reads[idx + start] = local_reads[idx]
 
-        #wait until all threads within the same thread block completes copying their assigned reads
 
 @cuda.jit(device=True)
 def correct_reads_two_sided(idx, local_reads, kmer_len, kmer_spectrum,  bases, left_kmer, right_kmer, threadIdx_block):
@@ -104,7 +101,6 @@ def correct_reads_two_sided(idx, local_reads, kmer_len, kmer_spectrum,  bases, l
 @cuda.jit
 def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, solids_after, not_corrected_counter):
     threadIdx = cuda.grid(1)
-    threadIdx_block = cuda.threadIdx.x
     if threadIdx < offsets.shape[0]:
 
         MAX_LEN = 300
@@ -113,12 +109,11 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
         solids = cuda.local.array(MAX_LEN, dtype='int8')
         alternatives = cuda.local.array((4, 2), dtype='uint32')
         corrected_solids = cuda.local.array(MAX_LEN, dtype='int8')
-        shared_reads = cuda.shared.array((512, 100), dtype='uint8')
+        local_reads = cuda.local.array(300, dtype='uint8') 
 
+        #we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(end - start):
-            shared_reads[threadIdx_block][idx] = reads[idx + start]
-
-        cuda.syncthreads()
+            local_reads[idx] = reads[idx + start]
 
         for i in range(end - start):
             solids[i] = -1
@@ -131,8 +126,8 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
         for i in range(5):
             bases[i] = i + 1
 
-        regions_count = identify_trusted_regions(start, end, kmer_spectrum, shared_reads, kmer_len, region_indices, solids, threadIdx_block)
-
+        regions_count = identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids)
+        
         copy_solids(threadIdx, solids, solids_counter)
 
         #fails to correct the read does not have a trusted region (how about regions that has no error?)
@@ -148,7 +143,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
 
                 #while we are not at the end base of the read
                 while region_end != (end - start) - 1:
-                    if not correct_read_one_sided_right(shared_reads, region_end, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+                    if not correct_read_one_sided_right(local_reads, region_end, kmer_spectrum, kmer_len, bases, alternatives):
                         not_corrected_counter[threadIdx] += 1
                         break
 
@@ -164,7 +159,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
 
                 #the loop will not stop until it does not find another region
                 while region_end != (next_region_start - 1):
-                    if not correct_read_one_sided_right(shared_reads, region_end, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+                    if not correct_read_one_sided_right(local_reads, region_end, kmer_spectrum, kmer_len, bases, alternatives):
                         not_corrected_counter[threadIdx] += 1
                         break
 
@@ -181,7 +176,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
 
                 #while we are not at the first base of the read
                 while region_start != 0:
-                    if not correct_read_one_sided_left(shared_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+                    if not correct_read_one_sided_left(local_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives):
                         not_corrected_counter[threadIdx] += 1
                         break
                     else:
@@ -193,33 +188,29 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
                 region_start, prev_region_end = region_indices[region][0], region_indices[region - 1][1]
                 while region_start - 1 != (prev_region_end):
 
-                    if not correct_read_one_sided_left(shared_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+                    if not correct_read_one_sided_left(local_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives):
                         not_corrected_counter[threadIdx] += 1
                         break
                     else:
                         region_start -= 1
                         region_indices[region][0] = region_start
 
-        identify_solid_bases(shared_reads, start, end, kmer_len, kmer_spectrum, corrected_solids, threadIdx_block)
+        identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, corrected_solids)
         copy_solids(threadIdx, corrected_solids, solids_after)
 
-        #copy the reads from shared memory back to the global memory
         for idx in range(end - start):
-            reads[idx + start] = shared_reads[threadIdx_block][idx]
-
-        #wait until all threads within the same thread block completes copying their assigned reads
-        cuda.syncthreads()
+            reads[idx + start] = reads[idx]
 
 @cuda.jit(device=True)
-def correct_read_one_sided_right(shared_reads,region_end, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+def correct_read_one_sided_right(local_reads,region_end, kmer_spectrum, kmer_len, bases, alternatives):
 
     possibility = 0
     alternative = -1
 
     #this is already unit tested that the indexing is correct and I assume that it wont access elements out of bounds since the while loop caller of this function will stop
     #if the region_end has found neighbor region or is at the end of the index
-    curr_kmer = shared_reads[threadIdx_block][(region_end - (kmer_len - 1)): region_end + 1]
-    forward_kmer = shared_reads[threadIdx_block][(region_end - (kmer_len - 1)) + 1: region_end + 2]
+    curr_kmer = local_reads[(region_end - (kmer_len - 1)): region_end + 1]
+    forward_kmer = local_reads[(region_end - (kmer_len - 1)) + 1: region_end + 2]
 
     curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len) 
     forward_kmer_transformed = transform_to_key(forward_kmer, kmer_len) 
@@ -246,7 +237,7 @@ def correct_read_one_sided_right(shared_reads,region_end, kmer_spectrum, kmer_le
 
     #not sure if correct indexing for reads
     if possibility == 1:
-        shared_reads[threadIdx_block][region_end + 1] = alternative
+        local_reads[region_end + 1] = alternative
         return True
 
     #we have to iterate the number of alternatives and find the max element
@@ -256,17 +247,17 @@ def correct_read_one_sided_right(shared_reads,region_end, kmer_spectrum, kmer_le
             if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
                 max = idx
 
-        shared_reads[threadIdx_block][region_end + 1] = alternatives[max][0]
+        local_reads[region_end + 1] = alternatives[max][0]
         return True
 
 @cuda.jit(device=True)
-def correct_read_one_sided_left(shared_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives, threadIdx_block):
+def correct_read_one_sided_left(local_reads, region_start, kmer_spectrum, kmer_len, bases, alternatives):
 
     possibility = 0
     alternative = -1
 
-    curr_kmer = shared_reads[threadIdx_block][region_start:region_start + kmer_len]
-    backward_kmer = shared_reads[threadIdx_block][region_start - 1: region_start + (kmer_len - 1)]
+    curr_kmer = local_reads[region_start:region_start + kmer_len]
+    backward_kmer = local_reads[region_start - 1: region_start + (kmer_len - 1)]
 
     curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len) 
     backward_kmer_transformed = transform_to_key(backward_kmer, kmer_len) 
@@ -290,7 +281,7 @@ def correct_read_one_sided_left(shared_reads, region_start, kmer_spectrum, kmer_
 
     #not sure if correct indexing for reads
     if possibility == 1:
-        shared_reads[threadIdx_block][region_start - 1] = alternative
+        local_reads[region_start - 1] = alternative
         return True
 
 
@@ -301,6 +292,6 @@ def correct_read_one_sided_left(shared_reads, region_start, kmer_spectrum, kmer_
             if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
                 max = idx
 
-        shared_reads[threadIdx_block][region_start - 1] = alternatives[max][0]
+        local_reads[region_start - 1] = alternatives[max][0]
         return True
 

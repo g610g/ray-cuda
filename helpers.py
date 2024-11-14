@@ -45,13 +45,13 @@ def mark_solids_array(solids, start, end):
     for i in range(start, end):
         solids[i] = 1
 
-#for correcting the edge bases in two-sided correction (not sure of the implementation yet)
-#only corrects the left edges of the read
 @cuda.jit(device=True)
 def give_kmer_multiplicity(kmer_spectrum, kmer):
-    for k in kmer_spectrum:
-        if k[0] == kmer:
-            return k[1]
+
+    index = binary_search_2d(kmer_spectrum, kmer)
+    if index != -1:
+        return kmer_spectrum[index][1]
+
     return -1
 
 @cuda.jit(device=True)

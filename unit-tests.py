@@ -50,6 +50,7 @@ class CorrectionTests(unittest.TestCase):
         key = self.transform_to_key(shared_reads[1:kmer_len + 1], kmer_len)
         print(f"key generated: {key}")
         self.assertEqual(key, 4243212354444)
+
     def test_binary_search_2d(self):
         sorted_arr = [[121231331133313, 2], [121231333123312, 2], [121231333123322, 2], [221212334123312, 2], [521212334123312, 2]] 
         needle = 221212334123312

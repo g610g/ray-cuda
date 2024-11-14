@@ -82,10 +82,10 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
 
     for _ in range(two_sided_iter):
         two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len)
-    #
-    # for _ in range(one_sided_iter):
-    #     one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
-        #voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
+
+    for _ in range(one_sided_iter):
+        one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
+        # voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
 
     end.record()
     end.synchronize()

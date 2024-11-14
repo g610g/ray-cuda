@@ -14,9 +14,9 @@ def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solid
             mark_solids_array(solids, idx , (idx + kmer_len))
 
 @cuda.jit(device=True)
-def identify_trusted_regions(start, end, kmer_spectrum, shared_reads, kmer_len, region_indices, solids, threadIdx_block):
+def identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids):
 
-    identify_solid_bases(shared_reads, start, end, kmer_len, kmer_spectrum, solids, threadIdx_block)
+    identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids)
 
     current_indices_idx = 0
     base_count = 0

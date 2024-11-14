@@ -72,7 +72,6 @@ def calculatecutoff_threshold(occurence_data, bin):
 
     valley_index = 0
 
-
     for idx in range(valley_index + 1, len(hist_vals)):
         if hist_vals[idx] > hist_vals[valley_index]:
            break
