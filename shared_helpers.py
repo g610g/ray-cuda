@@ -53,3 +53,9 @@ def identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, r
 
     #this will be the length or the number of trusted regions
     return current_indices_idx
+
+@cuda.jit(device=True)
+def to_local_reads(reads_1d, local_reads, start, end):
+
+    for idx in range(start, end):
+        local_reads[idx - start] = reads_1d[idx]

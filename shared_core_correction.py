@@ -134,6 +134,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
         if regions_count == 0:
             return
 
+        #no unit tests for this part yet
         for region in range(regions_count):
             #going towards right of the region 
 

@@ -7,6 +7,7 @@ import numpy as np
 from numba import cuda
 from Bio import SeqIO,Seq
 from shared_core_correction import *
+from shared_helpers import to_local_reads
 from voting import *
 from kmer import *
 # import seaborn as sns
@@ -59,7 +60,6 @@ def correct_edge_bases(idx, read, kmer, bases, kmer_len, kmer_spectrum, threadId
 
     return counter
 
-#our kernel fails with kmer of len 13
 @ray.remote(num_gpus=1, num_cpus=2)
 def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter):
     cuda.profile_start()
@@ -117,14 +117,14 @@ def back_sequence_kernel(reads, offsets, reads_result):
     read_segment = cuda.local.array(MAX_LEN, dtype='uint8')
     if threadIdx < offsets.shape[0]:
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-        for idx in range(start, end):
-            read_segment[idx - start] = reads[idx]
+        to_local_reads(reads, read_segment, start, end)
 
         #copy the assigned read for this thread into the 2d reads_result
         for idx in range(end - start):
             reads_result[threadIdx][idx] = read_segment[idx]
-
+    
 def md_array_to_rows_as_strings(md_df):
+
     translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
     rows_as_lists = md_df.to_pandas().apply(lambda row: row.tolist(), axis=1)
     non_zero_rows_as_lists = rows_as_lists.apply(lambda lst: [x for x in lst if x != 0])
@@ -140,7 +140,12 @@ def back_2_sequence(reads,offsets):
     offsets_df = cudf.DataFrame({"start":offsets[:,0], "end":offsets[:,1]})
     offsets_df['length'] = offsets_df['end'] - offsets_df['start']
     max_segment_length = offsets_df['length'].max()
-    
+
+    cuda.profile_start()
+    start = cuda.event()
+    end = cuda.event()
+    start.record()
+
     dev_reads = cuda.to_device(reads)
     dev_offsets = cuda.to_device(offsets)
     dev_reads_result = cuda.device_array((offsets.shape[0], max_segment_length), dtype='uint8')
@@ -149,11 +154,17 @@ def back_2_sequence(reads,offsets):
 
     back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets , dev_reads_result)
 
+    end.record()
+    end.synchronize()
+    transfer_time = cuda.event_elapsed_time(start, end)
+    print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
+    cuda.profile_stop()
+
     read_result_df = cudf.DataFrame(dev_reads_result)
 
     translated_strs = md_array_to_rows_as_strings(read_result_df) 
     reads = translated_strs.to_arrow().to_pylist()
-    return reads 
+    return reads
 
 @ray.remote(num_cpus=1) 
 def create_sequence_objects(reads_batch, seq_records_batch):
