@@ -1,13 +1,14 @@
 import time 
 import os
 import sys
-import ray
+
+from ray._private.worker import print_worker_logs
 import cudf
 import numpy as np
 from numba import cuda
 from Bio import SeqIO,Seq
 from shared_core_correction import *
-from shared_helpers import to_local_reads
+from shared_helpers import to_local_reads, back_to_sequence_helper, assign_sequence, increment_array
 from voting import *
 from kmer import *
 # import seaborn as sns
@@ -114,15 +115,16 @@ def count_error_reads(reads):
 def back_sequence_kernel(reads, offsets, reads_result):
     threadIdx = cuda.grid(1)
     MAX_LEN = 300
-    read_segment = cuda.local.array(MAX_LEN, dtype='uint8')
+    local_reads = cuda.local.array(MAX_LEN, dtype='uint8')
     if threadIdx < offsets.shape[0]:
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-        to_local_reads(reads, read_segment, start, end)
+        to_local_reads(reads, local_reads, start, end)
 
         #copy the assigned read for this thread into the 2d reads_result
         for idx in range(end - start):
-            reads_result[threadIdx][idx] = read_segment[idx]
-    
+            reads_result[threadIdx][idx] = local_reads[idx]
+
+#inefficient operation a lot of things going in here
 def md_array_to_rows_as_strings(md_df):
 
     translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
@@ -133,7 +135,9 @@ def md_array_to_rows_as_strings(md_df):
     cudf_rows_as_strings = cudf.Series(rows_as_strings)
     translated_strs = cudf_rows_as_strings.str.translate(translation_table)
     return translated_strs
+
 #a method to turn back string into biopython sequence
+#needs to be refactored since runs slowly
 @ray.remote(num_cpus=1,num_gpus=1)
 def back_2_sequence(reads,offsets):
 
@@ -171,6 +175,7 @@ def create_sequence_objects(reads_batch, seq_records_batch):
     for read, seq_record in zip(reads_batch, seq_records_batch):
         seq_record.seq = Seq.Seq(read)
     return seq_records_batch
+
 @ray.remote(num_gpus=1) 
 class GPUPing:
     def ping(self):
@@ -184,7 +189,19 @@ if __name__ == '__main__':
         if len(sys.argv) != 2:
             print(usage)
             exit(1)
-
+        cpus_detected = int(ray.cluster_resources()['CPU'])
+        #remove this after testing
+        zeros = [0] * 50000 
+        test_batch_size = len(zeros) // cpus_detected
+        remaining_refs = [increment_array.remote(zeros[batch_idx : test_batch_size + batch_idx]) for batch_idx in range(0, len(zeros), test_batch_size)]
+        # elements = []
+        # while remaining_refs:
+        #     ready, remaining_refs = ray.wait(remaining_refs)
+        #     returned_elements = ray.get(ready) 
+        #
+        #     for value in returned_elements:
+        #         elements.extend(value)
+        # print(len(elements)) 
         #does converting it into list and storing into memory has some implications as compared to represent it as a generator?
         with open(sys.argv[1]) as handle:
             fastq_data = SeqIO.parse(handle, 'fastq')
@@ -195,7 +212,7 @@ if __name__ == '__main__':
         print(f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}")
 
         kmer_len = 13
-        cpus_detected = int(ray.cluster_resources()['CPU'])
+        
 
         gpu_extractor = KmerExtractorGPU.remote(kmer_len)
         kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads))
@@ -218,7 +235,6 @@ if __name__ == '__main__':
 
         batch_size =  len(offsets)// cpus_detected
 
-        
         filtered_kmer_df = non_unique_kmers[non_unique_kmers['multiplicity'] >= cutoff_threshold]
         kmer_np = filtered_kmer_df.astype('uint64').to_numpy() 
         sort_start_time = time.perf_counter()
@@ -234,19 +250,40 @@ if __name__ == '__main__':
         back_sequence_start_time = time.perf_counter()
         new_sequences = list()
         print(new_sequences)
-        corrected_reads_array = ray.get(back_2_sequence.remote(corrected_reads, offsets))
+        corrected_reads_array = ray.get(back_to_sequence_helper.remote(corrected_reads, offsets))
         back_sequence_end_time= time.perf_counter()
         print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
         # for relative_idx in range(0, len(fastq_data_list), batch_size):
+        print(corrected_reads_array)
+        print(f"length of the corrected_reads: {len(corrected_reads_array)}")
 
+        write_file_starttime = time.perf_counter()
+
+        unfinished_refs= [assign_sequence.remote(corrected_reads_array[batch_idx:batch_idx + batch_size], fastq_data_list[batch_idx: batch_idx + batch_size]) for batch_idx in range(0, len(corrected_reads_array), batch_size)]
+        modified_sequences = []
+        while unfinished_refs:
+                ready, ready_refs = ray.wait(unfinished_refs)  
+                modified_batch_sequence = ray.get(ready)
+                for value in modified_batch_sequence:
+                    modified_sequences.extend(value)
+
+        modify_sequence_list_endtime = time.perf_counter()
+
+        print(f"time it takes to modify sequence objects: {modify_sequence_list_endtime - write_file_starttime}")
+
+        with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
+            SeqIO.write(modified_sequences, output_handle, 'fastq')
+
+        write_file_endtime= time.perf_counter()
+        print(f"time it takes to write reads back to fastq file: {write_file_endtime - write_file_starttime}")
         #spread operator baby
         #probably the order is not the same as the original order
         # new_sequences = [ray.get(create_sequence_objects.remote(corrected_reads_array[relative_idx:relative_idx + batch_size], fastq_data_list[relative_idx:relative_idx + batch_size])) for relative_idx in range(0, len(fastq_data_list), batch_size)]
-        #
-        # #flattens the array
+        # #
+        # # #flattens the array
         # flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
-        # with open("genetic-assets/corrected_output.fastq", "w") as output_handle:
-        #     SeqIO.write(flattened_sequences, output_handle, 'fastq')
+        # with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
+        #      SeqIO.write(flattened_sequences, output_handle, 'fastq')
 
         #visuals
         # plt.figure(figsize=(12, 6))
@@ -260,4 +297,5 @@ if __name__ == '__main__':
         end_time = time.perf_counter()
         print(f"Elapsed time is {end_time - start_time}")
      
+
 
