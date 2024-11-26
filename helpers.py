@@ -107,10 +107,10 @@ def identify_trusted_regions(start, end, kmer_spectrum, reads, kmer_len, region_
     return current_indices_idx
 
 @cuda.jit(device=True)
-def copy_solids(threadIdx, solids, arr):
+def copy_solids(threadIdx, solids, solids_before):
 
     for idx, base in enumerate(solids):
-        arr[threadIdx][idx] = base
+        solids_before[threadIdx][idx] = base
 
 
 #marks the base index as 1 if erroneous. 0 otherwise

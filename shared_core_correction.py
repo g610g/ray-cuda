@@ -99,7 +99,7 @@ def correct_reads_two_sided(idx, local_reads, kmer_len, kmer_spectrum,  bases, l
     # return counter
 #no implementation for tracking how many corrections are done for each kmers in the read
 @cuda.jit
-def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, solids_after, not_corrected_counter):
+def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_before, solids_after, not_corrected_counter):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
 
@@ -128,7 +128,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_counter, so
 
         regions_count = identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids)
         
-        copy_solids(threadIdx, solids, solids_counter)
+        copy_solids(threadIdx, solids, solids_before)
 
         #fails to correct the read does not have a trusted region (how about regions that has no error?)
         if regions_count == 0:

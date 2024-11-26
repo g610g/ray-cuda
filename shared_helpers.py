@@ -132,3 +132,36 @@ def back_sequence_kernel(reads, offsets, reads_result):
         for idx in range(end - start):
             reads_result[threadIdx][idx] = local_reads[idx]
 
+#normal python function for giving insights by differentiating before and after solids
+def differ_solids(solids_before, solids_after):
+    if len(solids_before) != len(solids_after):
+        return False
+    for solid_before, solid_after in zip(solids_before, solids_after):
+        differ_count = 0
+        for base_before, base_after in zip(solid_before, solid_after):
+            if base_before != base_after:
+                differ_count += 1
+        if differ_count != 0:
+            print(f"difference is {differ_count}")
+    return True
+
+def print_solids_after(solids_after):
+    for solid_after in solids_after:
+        print(solid_after)
+
+def count_untrusted_bases(solids_after):
+    for solid_after in solids_after:
+        untrusted_bases_count = 0
+        for base in solid_after:
+            if base == -1:
+                untrusted_bases_count += 1
+        if untrusted_bases_count != 0 or untrusted_bases_count > 0:
+            print(f"Number of untrusted bases: {untrusted_bases_count}")
+def count_error_reads(solids, len):
+    error_reads = 0
+    for solid in solids:
+        for idx in range(len):
+            if solid[idx] == -1:
+                error_reads += 1
+                break
+    return error_reads

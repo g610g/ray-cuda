@@ -8,7 +8,7 @@ import numpy as np
 from numba import cuda
 from Bio import SeqIO,Seq
 from shared_core_correction import *
-from shared_helpers import to_local_reads, back_to_sequence_helper, assign_sequence, increment_array
+from shared_helpers import to_local_reads, back_to_sequence_helper, assign_sequence, increment_array, differ_solids, print_solids_after, count_error_reads
 from voting import *
 from kmer import *
 # import seaborn as sns
@@ -84,8 +84,8 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     for _ in range(two_sided_iter):
         two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len)
 
-    for _ in range(one_sided_iter):
-        one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
+    # for _ in range(one_sided_iter):
+    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
         # voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
 
     end.record()
@@ -94,19 +94,19 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return dev_reads_1d.copy_to_host()
+    return [dev_solids.copy_to_host(), dev_solids_after.copy_to_host()]
 
 
 #returns then number of error bases
-@ray.remote(num_cpus=1) 
-def count_error_reads(reads):
-    count = 0
-    for read in reads:
-        for base in read:
-            if base == -1:
-                count += 1
-                continue
-    return count
+# @ray.remote(num_cpus=1) 
+# def count_error_reads(reads):
+#     count = 0
+#     for read in reads:
+#         for base in read:
+#             if base == -1:
+#                 count += 1
+#                 continue
+#     return count
 
 #a kernel that brings back the sequences by using the offsets array
 #doing this in a kernel since I havent found any cudf methods that transform my jagged array into a segments known as reads
@@ -229,7 +229,6 @@ if __name__ == '__main__':
         occurence_data = non_unique_kmers['multiplicity'].to_numpy()
 
         reversed_occurence_data = occurence_data[::-1]
-        print(reversed_occurence_data[:200])
         cutoff_threshold = calculatecutoff_threshold(occurence_data, occurence_data[0] // 2)
         print(f"cutoff threshold: {cutoff_threshold}")
 
@@ -244,38 +243,44 @@ if __name__ == '__main__':
         sort_end_time =time.perf_counter()
         print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
         print(sorted_kmer_np)
-        corrected_reads = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
+        [solids_before, solids_after] = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
+        # if not differ_solids(solids_before, solids_after):
+        #     print("Something went wrong")
+        error_reads_num = count_error_reads(solids_after, 100)
+        print(f"error reads: {error_reads_num}")
+        # count_untrusted_bases(solids_after)
+        # corrected_reads = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
 
-        back_sequence_start_time = time.perf_counter()
-        new_sequences = list()
-        print(new_sequences)
-        corrected_reads_array = ray.get(back_to_sequence_helper.remote(corrected_reads, offsets))
-        back_sequence_end_time= time.perf_counter()
-        print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
-        # for relative_idx in range(0, len(fastq_data_list), batch_size):
-        print(corrected_reads_array)
-        print(f"length of the corrected_reads: {len(corrected_reads_array)}")
+        # back_sequence_start_time = time.perf_counter()
+        # new_sequences = list()
+        # print(new_sequences)
+        # corrected_reads_array = ray.get(back_to_sequence_helper.remote(corrected_reads, offsets))
+        # back_sequence_end_time= time.perf_counter()
+        # print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
+        # # for relative_idx in range(0, len(fastq_data_list), batch_size):
+        # print(corrected_reads_array)
+        # print(f"length of the corrected_reads: {len(corrected_reads_array)}")
 
-        write_file_starttime = time.perf_counter()
+        # write_file_starttime = time.perf_counter()
 
-        unfinished_refs= [assign_sequence.remote(corrected_reads_array[batch_idx:batch_idx + batch_size], fastq_data_list[batch_idx: batch_idx + batch_size]) for batch_idx in range(0, len(corrected_reads_array), batch_size)]
-        modified_sequences = []
-        while unfinished_refs:
-                ready, ready_refs = ray.wait(unfinished_refs)  
-                modified_batch_sequence = ray.get(ready)
-                for value in modified_batch_sequence:
-                    modified_sequences.extend(value)
+        # unfinished_refs= [assign_sequence.remote(corrected_reads_array[batch_idx:batch_idx + batch_size], fastq_data_list[batch_idx: batch_idx + batch_size]) for batch_idx in range(0, len(corrected_reads_array), batch_size)]
+        # modified_sequences = []
+        # while unfinished_refs:
+        #         ready, ready_refs = ray.wait(unfinished_refs)  
+        #         modified_batch_sequence = ray.get(ready)
+        #         for value in modified_batch_sequence:
+        #             modified_sequences.extend(value)
 
-        modify_sequence_list_endtime = time.perf_counter()
+        # modify_sequence_list_endtime = time.perf_counter()
 
-        print(f"time it takes to modify sequence objects: {modify_sequence_list_endtime - write_file_starttime}")
+        # print(f"time it takes to modify sequence objects: {modify_sequence_list_endtime - write_file_starttime}")
 
-        with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
-            SeqIO.write(modified_sequences, output_handle, 'fastq')
+        # with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
+        #     SeqIO.write(modified_sequences, output_handle, 'fastq')
 
-        write_file_endtime= time.perf_counter()
-        print(f"time it takes to write reads back to fastq file: {write_file_endtime - write_file_starttime}")
+        # write_file_endtime= time.perf_counter()
+        # print(f"time it takes to write reads back to fastq file: {write_file_endtime - write_file_starttime}")
         #spread operator baby
         #probably the order is not the same as the original order
         # new_sequences = [ray.get(create_sequence_objects.remote(corrected_reads_array[relative_idx:relative_idx + batch_size], fastq_data_list[relative_idx:relative_idx + batch_size])) for relative_idx in range(0, len(fastq_data_list), batch_size)]
@@ -297,5 +302,3 @@ if __name__ == '__main__':
         end_time = time.perf_counter()
         print(f"Elapsed time is {end_time - start_time}")
      
-
-

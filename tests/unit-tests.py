@@ -92,7 +92,6 @@ class CorrectionTests(unittest.TestCase):
         
 
         assert_array_equal(region_indices, expected)
-
     def identify_trusted_regions(self, solids, kmer_len):
         current_indices_idx = 0
         base_count = 0
@@ -126,5 +125,6 @@ class CorrectionTests(unittest.TestCase):
             current_indices_idx += 1
 
         return [current_indices_idx, region_indices]
+
 if __name__ == '__main__':
     unittest.main()
