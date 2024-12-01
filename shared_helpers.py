@@ -1,6 +1,6 @@
 import cudf
 from numba import cuda
-from helpers import in_spectrum, transform_to_key, mark_solids_array
+from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
 from Bio import Seq
 import ray
 
@@ -108,6 +108,7 @@ def increment_array(arr):
         value += 1
     return arr
 
+#this task is slow because it returns a Sequence object that needs to be serialized
 @ray.remote(num_cpus=1)
 def assign_sequence(read_batch, sequence_batch):
     translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
@@ -118,7 +119,26 @@ def assign_sequence(read_batch, sequence_batch):
         sequence.seq = Seq.Seq(ascii_read_string)
     return sequence_batch
 
+@cuda.jit
+def calculate_reads_solidity(reads, offsets, solids_array, kmer_len, kmer_spectrum):
+    threadIdx = cuda.grid(1)
+    if threadIdx <= offsets.shape[0]:
+        MAX_LEN = 300
+        local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
+        local_solids = cuda.local.array(MAX_LEN, dtype="int8")
+        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
 
+        for idx in range(end - start):
+            local_solids[idx] = -1
+
+        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+
+        #copy global reads into local variable
+        for idx in range(end - start):
+            local_reads[idx] = reads[idx + start]
+        
+        identify_solid_bases(local_reads, start, end, kmer_len,kmer_spectrum,local_solids)
+        copy_solids(threadIdx, local_solids, solids_array)
 @cuda.jit
 def back_sequence_kernel(reads, offsets, reads_result):
     threadIdx = cuda.grid(1)
@@ -157,11 +177,12 @@ def count_untrusted_bases(solids_after):
                 untrusted_bases_count += 1
         if untrusted_bases_count != 0 or untrusted_bases_count > 0:
             print(f"Number of untrusted bases: {untrusted_bases_count}")
-def count_error_reads(solids, len):
+@ray.remote(num_cpus=1)
+def count_error_reads(solids_batch, len):
     error_reads = 0
-    for solid in solids:
+    for solid in solids_batch:
         for idx in range(len):
             if solid[idx] == -1:
                 error_reads += 1
                 break
-    return error_reads
+    print(f"error reads detected: {error_reads}")

@@ -125,6 +125,13 @@ class CorrectionTests(unittest.TestCase):
             current_indices_idx += 1
 
         return [current_indices_idx, region_indices]
+    
+    def test_array_slicing(self):
+        arr = [1,2,3,4,5]
+        slice_arr = arr[:3]
+        slice_arr[0] = 3
+        self.assertEqual(arr, [1,2,3,4,5])
+        self.assertEqual(slice_arr, [3,2,3])
 
 if __name__ == '__main__':
     unittest.main()

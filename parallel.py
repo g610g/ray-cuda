@@ -1,14 +1,12 @@
 import time 
 import os
 import sys
-
-from ray._private.worker import print_worker_logs
 import cudf
 import numpy as np
-from numba import cuda
 from Bio import SeqIO,Seq
 from shared_core_correction import *
-from shared_helpers import to_local_reads, back_to_sequence_helper, assign_sequence, increment_array, differ_solids, print_solids_after, count_error_reads
+from numba import cuda
+from shared_helpers import to_local_reads, back_to_sequence_helper, assign_sequence, increment_array, differ_solids, print_solids_after, count_error_reads, calculate_reads_solidity
 from voting import *
 from kmer import *
 # import seaborn as sns
@@ -83,10 +81,16 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
 
     for _ in range(two_sided_iter):
         two_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets , dev_result, kmer_len)
-
-    # for _ in range(one_sided_iter):
-    one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, dev_solids, dev_solids_after, not_corrected_counter)
-        # voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
+    
+    #calculates the solidity of kmer before one sided correction and voting based
+    calculate_reads_solidity[bpg, tbp](dev_reads_1d,dev_offsets,dev_solids, kmer_len, dev_kmer_spectrum)
+    
+    for _ in range(one_sided_iter):
+        one_sided_kernel[bpg, tbp](dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len,  dev_solids_after, not_corrected_counter)
+        #voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
+    
+    #calculates the solidity of kmer after one sided correction and voting based
+    calculate_reads_solidity[bpg, tbp](dev_reads_1d,dev_offsets,dev_solids_after, kmer_len, dev_kmer_spectrum)
 
     end.record()
     end.synchronize()
@@ -94,7 +98,7 @@ def remote_two_sided(kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter,
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return [dev_solids.copy_to_host(), dev_solids_after.copy_to_host()]
+    return [dev_solids.copy_to_host(), dev_solids_after.copy_to_host(), dev_reads_1d.copy_to_host()]
 
 
 #returns then number of error bases
@@ -240,31 +244,34 @@ if __name__ == '__main__':
 
         #will this give me more overhead? :((
         sorted_kmer_np = sorted_arr = kmer_np[kmer_np[:, 0].argsort()]
-        sort_end_time =time.perf_counter()
+        sort_end_time = time.perf_counter()
         print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
         print(sorted_kmer_np)
-        [solids_before, solids_after] = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
+        [solids_before, solids_after, corrected_reads_array] = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
         # if not differ_solids(solids_before, solids_after):
-        #     print("Something went wrong")
-        error_reads_num = count_error_reads(solids_after, 100)
-        print(f"error reads: {error_reads_num}")
+        #print("Something went wrong")
+        # print("reads solidity before one sided and voting based algorithm")
+        # ray.get([count_error_reads.remote(solids_before[batch_idx:batch_idx + batch_size], 100) for batch_idx in range(0, len(solids_before), batch_size)])
+        
+        print("reads solidity after one sided and voting based algorithm")
+        ray.get([count_error_reads.remote(solids_after[batch_idx:batch_idx + batch_size], 100) for batch_idx in range(0, len(solids_after), batch_size)])
         # count_untrusted_bases(solids_after)
         # corrected_reads = ray.get(remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2))
         # print(f"marked number of alternatives for a base: {identified_error_base}") 
 
-        # back_sequence_start_time = time.perf_counter()
+        back_sequence_start_time = time.perf_counter()
         # new_sequences = list()
         # print(new_sequences)
-        # corrected_reads_array = ray.get(back_to_sequence_helper.remote(corrected_reads, offsets))
-        # back_sequence_end_time= time.perf_counter()
-        # print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
+        corrected_2d_reads_array = ray.get(back_to_sequence_helper.remote(corrected_reads_array, offsets))
+        back_sequence_end_time= time.perf_counter()
+        print(f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}")
         # # for relative_idx in range(0, len(fastq_data_list), batch_size):
         # print(corrected_reads_array)
         # print(f"length of the corrected_reads: {len(corrected_reads_array)}")
 
-        # write_file_starttime = time.perf_counter()
+        write_file_starttime = time.perf_counter()
 
-        # unfinished_refs= [assign_sequence.remote(corrected_reads_array[batch_idx:batch_idx + batch_size], fastq_data_list[batch_idx: batch_idx + batch_size]) for batch_idx in range(0, len(corrected_reads_array), batch_size)]
+        ray.get([assign_sequence.remote(corrected_2d_reads_array[batch_idx:batch_idx + batch_size], fastq_data_list[batch_idx: batch_idx + batch_size]) for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)])
         # modified_sequences = []
         # while unfinished_refs:
         #         ready, ready_refs = ray.wait(unfinished_refs)  

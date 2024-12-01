@@ -98,8 +98,8 @@ def correct_reads_two_sided(idx, local_reads, kmer_len, kmer_spectrum,  bases, l
 
     # return counter
 #no implementation for tracking how many corrections are done for each kmers in the read
-@cuda.jit
-def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_before, solids_after, not_corrected_counter):
+@cuda.jit()
+def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_after, not_corrected_counter):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
 
@@ -114,7 +114,6 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_before, sol
         #we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(end - start):
             local_reads[idx] = reads[idx + start]
-
         for i in range(end - start):
             solids[i] = -1
 
@@ -122,13 +121,12 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_before, sol
             corrected_solids[i] = -1
 
         bases = cuda.local.array(5, dtype='uint8')
-
         for i in range(5):
             bases[i] = i + 1
 
         regions_count = identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids)
         
-        copy_solids(threadIdx, solids, solids_before)
+        # copy_solids(threadIdx, solids, solids_before)
 
         #fails to correct the read does not have a trusted region (how about regions that has no error?)
         if regions_count == 0:
@@ -196,11 +194,8 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, solids_before, sol
                         region_start -= 1
                         region_indices[region][0] = region_start
 
-        identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, corrected_solids)
-        copy_solids(threadIdx, corrected_solids, solids_after)
-
         for idx in range(end - start):
-            reads[idx + start] = reads[idx]
+            reads[idx + start] = local_reads[idx]
 
 @cuda.jit(device=True)
 def correct_read_one_sided_right(local_reads,region_end, kmer_spectrum, kmer_len, bases, alternatives):
@@ -244,6 +239,7 @@ def correct_read_one_sided_right(local_reads,region_end, kmer_spectrum, kmer_len
     #we have to iterate the number of alternatives and find the max element
     if possibility > 1:
         max = 0
+        #check if what happens if for all possibility none has entered the if statement?
         for idx in range(possibility):
             if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
                 max = idx

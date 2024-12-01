@@ -1,13 +1,11 @@
 from numba import cuda
 from helpers import transform_to_key, in_spectrum
 
-#not sure yet
 @cuda.jit(device=True)
-def apply_vm_result(vm, read, start):
-
+def apply_vm_result(vm, read, start, end):
     #foreach base position, we check if there are bases that have values greater than 0 
     #apply that base if its value is greater than 0, otherwise, just ignore and retain the original base
-    for read_position in range(vm.shape[1]):
+    for read_position in range(end - start):
         current_base = -1
         max_vote = 0
         for base in range(4):
@@ -17,11 +15,13 @@ def apply_vm_result(vm, read, start):
         if max_vote != 0 and current_base != -1:
             read[start + read_position] = current_base
 
+#check for indexing in the code snippet
 @cuda.jit(device=True)
 def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
 
     curr_kmer = read[curr_idx: curr_idx + kmer_len]
     for idx in range(kmer_len):
+        original_base = curr_kmer[idx]
         for base in bases:
             curr_kmer[idx] = base
             trans_curr_kmer = transform_to_key(curr_kmer, kmer_len)
@@ -30,6 +30,8 @@ def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
             if in_spectrum(kmer_spectrum, trans_curr_kmer):
                 vm[base - 1][(curr_idx - start) + idx] += 1
 
+        #revert the base back to its original base
+        curr_kmer[idx] = original_base
     
 #the voting refinement
 @cuda.jit
@@ -40,7 +42,8 @@ def voting_algo(dev_reads, offsets, kmer_spectrum, kmer_len):
 
         MAX_LEN = 150
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-        vm = cuda.local.array((4, MAX_LEN), 'uint16')
+
+        vm = cuda.local.array((4, MAX_LEN), 'uint8')
         bases = cuda.local.array(4, 'uint8')
 
         for idx in range(4):
@@ -54,7 +57,7 @@ def voting_algo(dev_reads, offsets, kmer_spectrum, kmer_len):
                 invoke_voting(vm, kmer_spectrum, bases, kmer_len, idx, dev_reads, start)
 
         #apply the result of the vm into the reads
-        apply_vm_result(vm, dev_reads, start)
+        apply_vm_result(vm, dev_reads, start, end)
 
 
 
