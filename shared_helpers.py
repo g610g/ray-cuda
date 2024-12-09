@@ -7,6 +7,19 @@ import ray
 
 
 @cuda.jit(device=True)
+def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_base, read_length):
+    if base_idx < kmer_len:
+        for idx in range(0, base_idx + 1):
+            kmer_counter_list[idx] += 1
+    if base_idx > (read_length - (kmer_len - 1)):
+        min = base_idx - (kmer_len - 1)
+        for idx in range(min, max_kmer_base + 1):
+            kmer_counter_list[idx] += 1
+
+    min = base_idx - (kmer_len - 1)
+    for idx in range(min, base_idx + 1):
+        kmer_counter_list[idx] += 1
+@cuda.jit(device=True)
 def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
 
     for idx in range(0, (end - start) - (kmer_len - 1)):
@@ -77,6 +90,8 @@ def transform_back_to_row_reads(reads, batch_start, batch_end, offsets ):
 @ray.remote(num_cpus=1,num_gpus=1)
 def back_to_sequence_helper(reads,offsets):
 
+    
+    #find reads max length 
     offsets_df = cudf.DataFrame({"start":offsets[:,0], "end":offsets[:,1]})
     offsets_df['length'] = offsets_df['end'] - offsets_df['start']
     max_segment_length = offsets_df['length'].max()
@@ -109,6 +124,7 @@ def increment_array(arr):
     return arr
 
 #this task is slow because it returns a Sequence object that needs to be serialized
+#ray serializes object references and raw data
 @ray.remote(num_cpus=1)
 def assign_sequence(read_batch, sequence_batch):
     translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
@@ -117,6 +133,7 @@ def assign_sequence(read_batch, sequence_batch):
         read_string = ''.join(map(str, non_zeros_int_read)) 
         ascii_read_string = read_string.translate(translation_table)
         sequence.seq = Seq.Seq(ascii_read_string)
+
     return sequence_batch
 
 @cuda.jit

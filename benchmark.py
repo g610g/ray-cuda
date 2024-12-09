@@ -1,5 +1,6 @@
 import pysam
 
+
 def calculate_metrics(reference_fasta, original_bam, corrected_bam):
     # Open reference genome
     reference = pysam.FastaFile(reference_fasta)
@@ -8,34 +9,47 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
     original_reads = pysam.AlignmentFile(original_bam, "rb")
     corrected_reads = pysam.AlignmentFile(corrected_bam, "rb")
 
-    tp, fp, fn = 0, 0, 0 
+    tp, fp, fn = 0, 0, 0
 
     # Iterate over each original and corrected read pair
     for original, corrected in zip(original_reads.fetch(), corrected_reads.fetch()):
 
-        #gets the absolute positions of the reads on reference genome
+        # gets the absolute positions of the reads on reference genome
         original_positions = set(original.get_reference_positions())
         corrected_positions = set(corrected.get_reference_positions())
 
-        #gets the substring of the reference genome on where both read belongs
-        ref_seq = reference.fetch(original.reference_name, original.reference_start, original.reference_end)
+        # gets the substring of the reference genome on where both read belongs
+        ref_seq = reference.fetch(
+            original.reference_name, original.reference_start, original.reference_end
+        )
 
         # Compute TP, FP, TN, FN
-        for pos in original_positions.intersection(corrected_positions) :
-            #only checking the pair of reads that are of same length
+        for pos in original_positions.intersection(corrected_positions):
+            # only checking the pair of reads that are of same length
             # if pos in original_positions and pos in corrected_positions and (original.reference_end - original.reference_start) == (corrected.reference_end - corrected.reference_start):
             if pos in original_positions and pos in corrected_positions:
-                #the relative indices for the reads
+                # the relative indices for the reads
                 original_index = pos - original.reference_start
                 corrected_index = pos - corrected.reference_start
 
-                if (0 <= original_index < len(original.query_sequence)) and (0 <= original_index < len(ref_seq)) and (0 <= corrected_index < len(corrected.query_sequence)) and (0 <= corrected_index < len(ref_seq)):
+                if (
+                    (0 <= original_index < len(original.query_sequence))
+                    and (0 <= original_index < len(ref_seq))
+                    and (0 <= corrected_index < len(corrected.query_sequence))
+                    and (0 <= corrected_index < len(ref_seq))
+                ):
 
-                    #if there is a mismatch
-                    original_is_error = original.query_sequence[original_index] != ref_seq[original_index]
+                    # if there is a mismatch
+                    original_is_error = (
+                        original.query_sequence[original_index]
+                        != ref_seq[original_index]
+                    )
 
                     # Track if the corrected read fixed the error compared to the reference
-                    corrected_is_correct = corrected.query_sequence[corrected_index] == ref_seq[original_index]
+                    corrected_is_correct = (
+                        corrected.query_sequence[corrected_index]
+                        == ref_seq[original_index]
+                    )
 
                     if original_is_error and corrected_is_correct:
                         tp += 1
@@ -52,10 +66,11 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
 
     return {"TP": tp, "FP": fp, "FN": fn}
 
+
 # Example usage
 reference = "genetic-assets/GCF_000005845.2_ASM584v2_genomic.fna"
 original = "genetic-assets/ecoli_70x_3perc_single_uncorrected_sorted.bam"
-corrected = "genetic-assets/corrected_output_test_aligned_sorted.bam"
+corrected = "genetic-assets/ecoli_70x_3perc_single_corrected_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)
