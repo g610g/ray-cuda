@@ -5,20 +5,24 @@ from Bio import Seq
 import ray
 
 
-
+#computes the kmer that are affected for the correction and increment the correction count on each computed kmer
 @cuda.jit(device=True)
 def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_base, read_length):
     if base_idx < kmer_len:
         for idx in range(0, base_idx + 1):
             kmer_counter_list[idx] += 1
+        return
+
     if base_idx > (read_length - (kmer_len - 1)):
         min = base_idx - (kmer_len - 1)
         for idx in range(min, max_kmer_base + 1):
             kmer_counter_list[idx] += 1
+        return
 
     min = base_idx - (kmer_len - 1)
     for idx in range(min, base_idx + 1):
         kmer_counter_list[idx] += 1
+    return
 @cuda.jit(device=True)
 def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
 

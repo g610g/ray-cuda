@@ -82,6 +82,31 @@ class OneSidedTests(unittest.TestCase):
                     region_indices[region][0] = region_start
                     corrections_count += 1
         self.assertEqual(corrections_count, 6)
+    
+    def test_kmer_correction_counter_ends(self):
+        kmer_len = 5
+        reads = np.arange(14)
+        kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype='uint8')
+        self.mark_kmer_counter(0, kmer_counter_list, kmer_len, 9, len(reads))
+
+        assert_array_equal(np.array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),kmer_counter_list) 
+
+    def mark_kmer_counter(self, base_idx, kmer_counter_list, kmer_len, max_kmer_base, read_length):
+        if base_idx < (kmer_len - 1):
+            for idx in range(0, base_idx + 1):
+                kmer_counter_list[idx] += 1
+            return
+
+        if base_idx > (read_length - (kmer_len - 1)):
+            min = base_idx - (kmer_len - 1)
+            for idx in range(min, max_kmer_base + 1):
+                kmer_counter_list[idx] += 1
+            return
+
+        min = base_idx - (kmer_len - 1)
+        for idx in range(min, base_idx + 1):
+            kmer_counter_list[idx] += 1
+        return
 
 if __name__ == '__main__':
     unittest.main()
