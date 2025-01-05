@@ -5,7 +5,23 @@ from Bio import Seq
 import ray
 
 
-#computes the kmer that are affected for the correction and increment the correction count on each computed kmer
+# function that checks the kmer tracker and reverse back kmers thats been corrected greater than max allowed
+@cuda.jit(device=True)
+def check_tracker(
+    num_kmers,
+    kmer_tracker,
+    max_corrections_allowed,
+    original_read,
+    local_read,
+    kmer_len,
+):
+    for idx in range(num_kmers):
+        if kmer_tracker[idx] > max_corrections_allowed:
+            for base_idx in range(idx, idx + kmer_len):
+                local_read[base_idx] = original_read[base_idx]
+
+
+# computes the kmer that are affected for the correction and increment the correction count on each computed kmer
 @cuda.jit(device=True)
 def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
     if base_idx < kmer_len:
@@ -27,20 +43,25 @@ def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_
     for idx in range(min, base_idx + 1):
         kmer_counter_list[idx] += 1
     return
+
+
 @cuda.jit(device=True)
 def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
 
     for idx in range(0, (end - start) - (kmer_len - 1)):
-        ascii_kmer = local_reads[idx:idx + kmer_len]
+        ascii_kmer = local_reads[idx : idx + kmer_len]
 
         curr_kmer = transform_to_key(ascii_kmer, kmer_len)
 
-        #set the bases as solids
+        # set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
-            mark_solids_array(solids, idx , (idx + kmer_len))
+            mark_solids_array(solids, idx, (idx + kmer_len))
+
 
 @cuda.jit(device=True)
-def identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids):
+def identify_trusted_regions(
+    start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids
+):
 
     identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids)
 
@@ -49,19 +70,22 @@ def identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, r
     region_start = 0
     region_end = 0
 
-    #idx will be a relative index
+    # idx will be a relative index
     for idx in range(end - start):
 
-        #a trusted region has been found. Append it into the identified regions
+        # a trusted region has been found. Append it into the identified regions
         if base_count >= kmer_len and solids[idx] == -1:
 
-            region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end 
+            (
+                region_indices[current_indices_idx][0],
+                region_indices[current_indices_idx][1],
+            ) = (region_start, region_end)
             region_start = idx + 1
             region_end = idx + 1
             current_indices_idx += 1
             base_count = 0
 
-        #reset the region start since its left part is not a trusted region anymore
+        # reset the region start since its left part is not a trusted region anymore
         if solids[idx] == -1 and base_count < kmer_len:
             region_start = idx + 1
             region_end = idx + 1
@@ -69,16 +93,20 @@ def identify_trusted_regions(start, end, kmer_spectrum, local_reads, kmer_len, r
 
         if solids[idx] == 1:
             region_end = idx
-            base_count+=1
+            base_count += 1
 
-    #ending
+    # ending
     if base_count >= kmer_len:
 
-        region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end
+        (
+            region_indices[current_indices_idx][0],
+            region_indices[current_indices_idx][1],
+        ) = (region_start, region_end)
         current_indices_idx += 1
 
-    #this will be the length or the number of trusted regions
+    # this will be the length or the number of trusted regions
     return current_indices_idx
+
 
 @cuda.jit(device=True)
 def to_local_reads(reads_1d, local_reads, start, end):
@@ -88,21 +116,22 @@ def to_local_reads(reads_1d, local_reads, start, end):
 
 
 @ray.remote(num_cpus=1)
-def transform_back_to_row_reads(reads, batch_start, batch_end, offsets ):
+def transform_back_to_row_reads(reads, batch_start, batch_end, offsets):
 
     for batch_idx in range(batch_start, batch_end):
         start, end = offsets[batch_idx][0], offsets[batch_idx][1]
 
-#from jagged array to 2 dimensional array
 
-@ray.remote(num_cpus=1,num_gpus=1)
-def back_to_sequence_helper(reads,offsets):
+# from jagged array to 2 dimensional array
 
-    
-    #find reads max length 
-    offsets_df = cudf.DataFrame({"start":offsets[:,0], "end":offsets[:,1]})
-    offsets_df['length'] = offsets_df['end'] - offsets_df['start']
-    max_segment_length = offsets_df['length'].max()
+
+@ray.remote(num_cpus=1, num_gpus=1)
+def back_to_sequence_helper(reads, offsets):
+
+    # find reads max length
+    offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
+    offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
+    max_segment_length = offsets_df["length"].max()
 
     cuda.profile_start()
     start = cuda.event()
@@ -111,11 +140,13 @@ def back_to_sequence_helper(reads,offsets):
 
     dev_reads = cuda.to_device(reads)
     dev_offsets = cuda.to_device(offsets)
-    dev_reads_result = cuda.device_array((offsets.shape[0], max_segment_length), dtype='uint8')
+    dev_reads_result = cuda.device_array(
+        (offsets.shape[0], max_segment_length), dtype="uint8"
+    )
     tpb = 1024
     bpg = (offsets.shape[0] + tpb) // tpb
 
-    back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets , dev_reads_result)
+    back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets, dev_reads_result)
 
     end.record()
     end.synchronize()
@@ -125,24 +156,29 @@ def back_to_sequence_helper(reads,offsets):
 
     return dev_reads_result.copy_to_host()
 
+
 @ray.remote(num_cpus=1)
 def increment_array(arr):
     for value in arr:
         value += 1
     return arr
 
-#this task is slow because it returns a Sequence object that needs to be serialized
-#ray serializes object references and raw data
+
+# this task is slow because it returns a Sequence object that needs to be serialized
+# ray serializes object references and raw data
 @ray.remote(num_cpus=1)
 def assign_sequence(read_batch, sequence_batch):
-    translation_table = str.maketrans({"1":"A", "2":"C", "3":"G", "4":"T", "5":"N"})
+    translation_table = str.maketrans(
+        {"1": "A", "2": "C", "3": "G", "4": "T", "5": "N"}
+    )
     for int_read, sequence in zip(read_batch, sequence_batch):
         non_zeros_int_read = [x for x in int_read if x != 0]
-        read_string = ''.join(map(str, non_zeros_int_read)) 
+        read_string = "".join(map(str, non_zeros_int_read))
         ascii_read_string = read_string.translate(translation_table)
         sequence.seq = Seq.Seq(ascii_read_string)
 
     return sequence_batch
+
 
 @cuda.jit
 def calculate_reads_solidity(reads, offsets, solids_array, kmer_len, kmer_spectrum):
@@ -158,26 +194,31 @@ def calculate_reads_solidity(reads, offsets, solids_array, kmer_len, kmer_spectr
 
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
 
-        #copy global reads into local variable
+        # copy global reads into local variable
         for idx in range(end - start):
             local_reads[idx] = reads[idx + start]
-        
-        identify_solid_bases(local_reads, start, end, kmer_len,kmer_spectrum,local_solids)
+
+        identify_solid_bases(
+            local_reads, start, end, kmer_len, kmer_spectrum, local_solids
+        )
         copy_solids(threadIdx, local_solids, solids_array)
+
+
 @cuda.jit
 def back_sequence_kernel(reads, offsets, reads_result):
     threadIdx = cuda.grid(1)
     MAX_LEN = 300
-    local_reads = cuda.local.array(MAX_LEN, dtype='uint8')
+    local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
     if threadIdx < offsets.shape[0]:
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         to_local_reads(reads, local_reads, start, end)
 
-        #copy the assigned read for this thread into the 2d reads_result
+        # copy the assigned read for this thread into the 2d reads_result
         for idx in range(end - start):
             reads_result[threadIdx][idx] = local_reads[idx]
 
-#normal python function for giving insights by differentiating before and after solids
+
+# normal python function for giving insights by differentiating before and after solids
 def differ_solids(solids_before, solids_after):
     if len(solids_before) != len(solids_after):
         return False
@@ -190,9 +231,11 @@ def differ_solids(solids_before, solids_after):
             print(f"difference is {differ_count}")
     return True
 
+
 def print_solids_after(solids_after):
     for solid_after in solids_after:
         print(solid_after)
+
 
 def count_untrusted_bases(solids_after):
     for solid_after in solids_after:
@@ -202,6 +245,8 @@ def count_untrusted_bases(solids_after):
                 untrusted_bases_count += 1
         if untrusted_bases_count != 0 or untrusted_bases_count > 0:
             print(f"Number of untrusted bases: {untrusted_bases_count}")
+
+
 @ray.remote(num_cpus=1)
 def count_error_reads(solids_batch, len):
     error_reads = 0
