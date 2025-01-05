@@ -136,17 +136,19 @@ def one_sided_kernel(
     if threadIdx < offsets.shape[0]:
 
         MAX_LEN = 300
-        region_indices = cuda.local.array((10, 2), dtype="int32")
+
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         alternatives = cuda.local.array((4, 2), dtype="uint32")
         corrected_solids = cuda.local.array(MAX_LEN, dtype="int8")
-        local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
+        region_indices = cuda.local.array((10, 2), dtype="int8")
+        local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         correction_tracker = cuda.local.array(MAX_LEN, dtype="uint8")
         original_read = cuda.local.array(MAX_LEN, dtype="uint8")
 
         # number of kmers generated base on the length of reads and kmer
         num_kmers = (end - start) - (kmer_len - 1)
+        max_correction = 4
 
         bases = cuda.local.array(5, dtype="uint8")
         for i in range(5):
@@ -154,19 +156,20 @@ def one_sided_kernel(
 
         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(end - start):
-            local_reads[idx] = reads[idx + start]
+            local_read[idx] = reads[idx + start]
             original_read[idx] = reads[idx + start]
 
         # run one sided up to maximal allowable number of corrections
-        for _ in range(2):
+        for _ in range(max_correction):
             for i in range(end - start):
                 solids[i] = -1
 
+            # used for debugging
             for i in range(end - start):
                 corrected_solids[i] = -1
 
             regions_count = identify_trusted_regions(
-                start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids
+                start, end, kmer_spectrum, local_read, kmer_len, region_indices, solids
             )
 
             # copy_solids(threadIdx, solids, solids_before)
@@ -186,7 +189,7 @@ def one_sided_kernel(
                     # while we are not at the end base of the read
                     while region_end != (end - start) - 1:
                         if not correct_read_one_sided_right(
-                            local_reads,
+                            local_read,
                             region_end,
                             kmer_spectrum,
                             kmer_len,
@@ -212,7 +215,7 @@ def one_sided_kernel(
                     # the loop will not stop until it does not find another region
                     while region_end != (next_region_start - 1):
                         if not correct_read_one_sided_right(
-                            local_reads,
+                            local_read,
                             region_end,
                             kmer_spectrum,
                             kmer_len,
@@ -222,6 +225,7 @@ def one_sided_kernel(
                             num_kmers - 1,
                             end - start,
                         ):
+                            # fails to correct this region and on this orientation
                             not_corrected_counter[threadIdx] += 1
                             break
 
@@ -231,7 +235,6 @@ def one_sided_kernel(
                             region_indices[region][1] = region_end
 
                 # going towards left of the region
-
                 # we are the leftmost region
                 if region - 1 == -1:
                     region_start = region_indices[region][0]
@@ -239,7 +242,7 @@ def one_sided_kernel(
                     # while we are not at the first base of the read
                     while region_start != 0:
                         if not correct_read_one_sided_left(
-                            local_reads,
+                            local_read,
                             region_start,
                             kmer_spectrum,
                             kmer_len,
@@ -264,7 +267,7 @@ def one_sided_kernel(
                     while region_start - 1 != (prev_region_end):
 
                         if not correct_read_one_sided_left(
-                            local_reads,
+                            local_read,
                             region_start,
                             kmer_spectrum,
                             kmer_len,
@@ -286,11 +289,16 @@ def one_sided_kernel(
 
         # after the correction, check the tracker if any kmer has number of corrections greater than max corrections
         check_tracker(
-            num_kmers, correction_tracker, 2, original_read, local_reads, kmer_len
+            num_kmers,
+            correction_tracker,
+            max_correction,
+            original_read,
+            local_read,
+            kmer_len,
         )
 
         for idx in range(end - start):
-            reads[idx + start] = local_reads[idx]
+            reads[idx + start] = local_read[idx]
 
 
 @cuda.jit(device=True)
@@ -317,8 +325,7 @@ def correct_read_one_sided_right(
     curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len)
     forward_kmer_transformed = transform_to_key(forward_kmer, kmer_len)
 
-    # we can now correct this. else return diz shet or break
-    # if false does it imply failure?
+    # false implies failure
     if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(
         kmer_spectrum, forward_kmer_transformed
     ):
@@ -353,7 +360,6 @@ def correct_read_one_sided_right(
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
         max = 0
-        # check if what happens if for all possibility none has entered the if statement?
         for idx in range(possibility):
             if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
                 max = idx
