@@ -1,5 +1,5 @@
 from numba import cuda
-from shared_helpers import identify_solid_bases, identify_trusted_regions
+from shared_helpers import identify_solid_bases, identify_trusted_regions, mark_kmer_counter
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity, copy_solids
 
 
@@ -17,6 +17,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, result, kmer_len):
         bases = cuda.local.array(4, dtype='uint8')
         solids = cuda.local.array(MAX_LEN, dtype='int8')
         local_reads = cuda.local.array(300, dtype='uint8')  
+        correction_tracker = cuda.local.array(MAX_LEN, dtype='uint8')
 
         #we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(0, end - start):

@@ -7,7 +7,7 @@ import ray
 
 #computes the kmer that are affected for the correction and increment the correction count on each computed kmer
 @cuda.jit(device=True)
-def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_base, read_length):
+def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
     if base_idx < kmer_len:
         for idx in range(0, base_idx + 1):
             kmer_counter_list[idx] += 1
@@ -15,11 +15,15 @@ def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_base, read
 
     if base_idx > (read_length - (kmer_len - 1)):
         min = base_idx - (kmer_len - 1)
-        for idx in range(min, max_kmer_base + 1):
+        for idx in range(min, max_kmer_idx + 1):
             kmer_counter_list[idx] += 1
         return
 
     min = base_idx - (kmer_len - 1)
+    if base_idx > max_kmer_idx:
+        for idx in range(min, max_kmer_idx + 1):
+            kmer_counter_list[idx] += 1
+        return
     for idx in range(min, base_idx + 1):
         kmer_counter_list[idx] += 1
     return
