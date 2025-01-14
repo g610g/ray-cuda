@@ -3,6 +3,8 @@ import numpy as np
 from numpy.testing import assert_equal, assert_array_equal
 
 
+
+
 class OneSidedTests(unittest.TestCase):
     def identify_trusted_regions(self, solids, kmer_len):
         current_indices_idx = 0
@@ -96,40 +98,82 @@ class OneSidedTests(unittest.TestCase):
     def test_onesided_lookahead(self):
         spectrum = []
         kmer_length = 3
-        local_read = [1, 3, 2, 1, 2, 4, 1, 2, 3, 5, 4, 3]
+        local_read = [1, 3, 2, 1, 2, 4, 1, 2, 3, 5, 4, 3, 4, 2, 1, 3, 5, 3, 2, 3]
 
         #add in spectrum
         for idx in range(0, len(local_read) - (kmer_length - 1)):
-            spectrum.append(local_read[idx: idx + kmer_length])
+            spectrum.append(self.transform_to_key(local_read[idx: idx + kmer_length], kmer_length))
 
-        local_read[6] = 2
-        print(spectrum)
-        res = self.lookahead_validation(kmer_length, local_read, spectrum, 6, 1)
+        max_idx = len(local_read) - 1
+        local_read[max_idx] = 2
+        res = self.lookahead_validation(kmer_length, local_read, spectrum, max_idx, 3)
         assert_equal(True, res)
 
-    def lookahead_validation(self, kmer_length, local_read, kmer_spectrum, modified_base_idx,  alternative_base, neighbors_max_count = 2):
-        #this is for base that has kmers that covers < neighbors_max_count
+    def lookahead_validation(
+        self,
+        kmer_length,
+        local_read,
+        kmer_spectrum,
+        modified_base_idx,
+        alternative_base,
+        neighbors_max_count=2,
+    ):
+        # this is for base that has kmers that covers < neighbors_max_count
         if modified_base_idx < neighbors_max_count:
-            pass
+            num_possible_neighbors = modified_base_idx + 1
+            counter = modified_base_idx
+            min_idx = 0
+            for _ in range(num_possible_neighbors):
+                alternative_kmer = local_read[min_idx: min_idx+kmer_length]
+                print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter}")
+                alternative_kmer[counter] = alternative_base
+                transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
+                if not in_spectrum( transformed_alternative_kmer, kmer_spectrum):
+                    return False
+                min_idx += 1
+                counter -= 1
+            return True
 
-        counter = kmer_length - 1
+        # for bases that are modified outside the "easy range"
+        if modified_base_idx >= len(local_read) - kmer_length:
+            num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
+
+            min_idx = modified_base_idx - (kmer_length - 1)
+            max_idx = modified_base_idx
+            counter = kmer_length - 1
+
+            for _ in range(num_possible_neighbors + 1):
+                alternative_kmer = local_read[min_idx: min_idx + kmer_length]
+                print(f"alternative kmer: {alternative_kmer}")
+                print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter}")
+                alternative_kmer[counter] = alternative_base
+                transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
+                if not in_spectrum(transformed_alternative_kmer, kmer_spectrum):
+                    return False
+                min_idx += 1
+                counter -= 1
+            return True
+
+        # this is the modified base idx that are within the range of "easy range"
         min_idx = modified_base_idx - (kmer_length - 1)
         max_idx = modified_base_idx
-        for _idx in range(neighbors_max_count):
-            if (min_idx > max_idx):
-                return False
+        counter = kmer_length - 1
 
-            alternative_kmer = local_read[min_idx: min_idx + kmer_length]
-            print(f"Kmer before changing base: {alternative_kmer}")
+        for _idx in range(neighbors_max_count):
+            if min_idx > max_idx:
+                return False
+            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
+            print(f"alternative kmer: {alternative_kmer}")
+            print(f"min index: {min_idx}, max idx: {min_idx + kmer_length}")
             alternative_kmer[counter] = alternative_base
-            print(f"Kmer after changing base: {alternative_kmer}")
             transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
             if not in_spectrum(transformed_alternative_kmer, kmer_spectrum):
                 return False
+
             min_idx += 1
             counter -= 1
 
-        #returned True meaning the alternative base which sequencing error occurs is (valid)?
+        # returned True meaning the alternative base which sequencing error occurs is (valid)?
         return True
     def mark_kmer_counter(self, base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
         if base_idx < (kmer_len - 1):

@@ -1,3 +1,6 @@
+from threading import local
+
+from ray.util.client import num_connected_contexts
 import cudf
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
@@ -269,18 +272,49 @@ def lookahead_validation(
 ):
     # this is for base that has kmers that covers < neighbors_max_count
     if modified_base_idx < neighbors_max_count:
-        pass
-    counter = kmer_length - 1
+        num_possible_neighbors = modified_base_idx + 1
+        counter = modified_base_idx
+        min_idx = 0
+        for _ in range(num_possible_neighbors):
+            alternative_kmer = local_read[min_idx: min_idx+kmer_length]
+            alternative_kmer[counter] = alternative_base
+
+            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+                return False
+            min_idx += 1
+            counter -= 1
+    # for bases that are modified outside the "easy range"
+    if modified_base_idx >= len(local_read) - kmer_length:
+        num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
+
+        min_idx = modified_base_idx - (kmer_length - 1)
+        max_idx = modified_base_idx
+        counter = kmer_length - 1
+
+        for _ in range(num_possible_neighbors):
+            alternative_kmer = local_read[min_idx: min_idx + kmer_length]
+            alternative_kmer[counter] = alternative_base
+            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+                return False
+            min_idx += 1
+            counter -= 1
+
+    # this is the modified base idx that are within the range of "easy range"
     min_idx = modified_base_idx - (kmer_length - 1)
     max_idx = modified_base_idx
+    counter = kmer_length - 1
+
     for _idx in range(neighbors_max_count):
-        if min_idx >= max_idx:
+        if min_idx > max_idx:
             return False
         alternative_kmer = local_read[min_idx : min_idx + kmer_length]
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
+
         min_idx += 1
         counter -= 1
 
