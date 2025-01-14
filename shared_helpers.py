@@ -256,3 +256,33 @@ def count_error_reads(solids_batch, len):
                 error_reads += 1
                 break
     print(f"error reads detected: {error_reads}")
+
+
+@cuda.jit
+def lookahead_validation(
+    kmer_length,
+    local_read,
+    kmer_spectrum,
+    modified_base_idx,
+    alternative_base,
+    neighbors_max_count=2,
+):
+    # this is for base that has kmers that covers < neighbors_max_count
+    if modified_base_idx < neighbors_max_count:
+        pass
+    counter = kmer_length - 1
+    min_idx = modified_base_idx - (kmer_length - 1)
+    max_idx = modified_base_idx
+    for _idx in range(neighbors_max_count):
+        if min_idx >= max_idx:
+            return False
+        alternative_kmer = local_read[min_idx : min_idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+        min_idx += 1
+        counter -= 1
+
+    # returned True meaning the alternative base which sequencing error occurs is (valid)?
+    return True
