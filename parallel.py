@@ -108,6 +108,7 @@ def remote_two_sided(
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     # dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
+    lookahead_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype="uint16"))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     kmers_tracker = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="uint8"))
@@ -270,14 +271,6 @@ if __name__ == "__main__":
         increment_array.remote(zeros[batch_idx : test_batch_size + batch_idx])
         for batch_idx in range(0, len(zeros), test_batch_size)
     ]
-    # elements = []
-    # while remaining_refs:
-    #     ready, remaining_refs = ray.wait(remaining_refs)
-    #     returned_elements = ray.get(ready)
-    #
-    #     for value in returned_elements:
-    #         elements.extend(value)
-    # print(len(elements))
     # does converting it into list and storing into memory has some implications as compared to represent it as a generator?
     with open(sys.argv[1]) as handle:
         fastq_data = SeqIO.parse(handle, "fastq")
@@ -337,13 +330,13 @@ if __name__ == "__main__":
     #         for batch_idx in range(0, len(solids_after), batch_size)
     #     ]
     # )
-    # print("Number of kmers that exceeds maximal allowed corrections")
-    # ray.get(
-    #     [
-    #         check_corrections.remote(kmers_tracker[batch_idx : batch_idx + batch_size])
-    #         for batch_idx in range(0, len(kmers_tracker), batch_size)
-    #     ]
-    # )
+    print("Number of kmers that exceeds maximal allowed corrections")
+    ray.get(
+        [
+            check_corrections.remote(kmers_tracker[batch_idx : batch_idx + batch_size])
+            for batch_idx in range(0, len(kmers_tracker), batch_size)
+        ]
+    )
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(

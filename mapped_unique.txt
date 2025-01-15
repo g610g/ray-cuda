@@ -1,4 +1,3 @@
-
 #shell
 
 total_reads=$(samtools view -c alignment_output.sam)
@@ -19,10 +18,10 @@ art_illumina -ss HS25 -i ecoli_k12_mg1655.fasta -l 100 -f 30 -o ecoli_30x_3perc_
 
 
 #for aligning reads into its reference genome using BWA (Burrows Wheeler Alignment)
-bwa mem GCF_000005845.2_ASM584v2_genomic.fna  ecoli_30x_2perc_single_corrected.fastq | samtools view -b -o ecoli_30x_2perc_single_corrected.bam
+bwa mem genetic-assets/GCF_000005845.2_ASM584v2_genomic.fna genetic-assets/please.fastq | samtools view -b -o genetic-assets/please_aligned.bam
 
 #for sorting and indexing the aligned reads genetic-assets/
-samtools sort corrected_reads.bam -o corrected_reads_sorted.bam
-samtools index corrected_reads_sorted.bam
+samtools sort genetic-assets/please_aligned.bam -o genetic-assets/please_aligned_sorted.bam
+samtools index genetic-assets/please_aligned_sorted.bam
 
 

@@ -41,3 +41,8 @@
 - Refactor the GPUExtractor class 
 - Remove the variables within the kernels that are used for benchmarking
 
+
+
+# TESTING PROBLEM
+- When modified idx is less than k-len, the calculated starting index will be negative
+- 

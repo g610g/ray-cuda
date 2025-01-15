@@ -3,6 +3,7 @@ from shared_helpers import (
     check_tracker,
     identify_solid_bases,
     identify_trusted_regions,
+    lookahead_validation,
     mark_kmer_counter,
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity, copy_solids
@@ -287,7 +288,10 @@ def one_sided_kernel(
         for idx in range(num_kmers):
             kmers_tracker[threadIdx][idx] = correction_tracker[idx]
 
+        #add voting based right here with tracking of corrections
+
         # after the correction, check the tracker if any kmer has number of corrections greater than max corrections
+        
         check_tracker(
             num_kmers,
             correction_tracker,
@@ -335,7 +339,8 @@ def correct_read_one_sided_right(
             forward_kmer[-1] = alternative_base
             candidate_kmer = transform_to_key(forward_kmer, kmer_len)
 
-            if in_spectrum(kmer_spectrum, candidate_kmer):
+            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
+            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_end + 1, alternative_base, neighbors_max_count=2):
 
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
@@ -351,6 +356,7 @@ def correct_read_one_sided_right(
 
     # not sure if correct indexing for reads
     if possibility == 1:
+
         local_reads[region_end + 1] = alternative
         mark_kmer_counter(
             region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
@@ -371,6 +377,7 @@ def correct_read_one_sided_right(
         return True
 
 
+#for orientation going to the left of the read
 @cuda.jit(device=True)
 def correct_read_one_sided_left(
     local_reads,
@@ -401,13 +408,15 @@ def correct_read_one_sided_left(
             backward_kmer[0] = alternative_base
             candidate_kmer = transform_to_key(backward_kmer, kmer_len)
 
-            if in_spectrum(kmer_spectrum, candidate_kmer):
+            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
+            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_start - 1, alternative_base, neighbors_max_count=2):
 
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
                     alternative_base,
                     give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
                 )
+
                 possibility += 1
                 alternative = alternative_base
 
@@ -417,6 +426,7 @@ def correct_read_one_sided_left(
 
     # not sure if correct indexing for reads
     if possibility == 1:
+
         local_reads[region_start - 1] = alternative
         mark_kmer_counter(
             region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
@@ -425,6 +435,7 @@ def correct_read_one_sided_left(
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
+
         max = 0
         for idx in range(possibility):
             if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
