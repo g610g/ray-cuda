@@ -75,3 +75,96 @@ def identify_trusted_regions(
 
     # this will be the length or the number of trusted regions
     return current_indices_idx
+
+
+
+
+
+def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
+    if base_idx < kmer_len:
+        for idx in range(0, base_idx + 1):
+            kmer_counter_list[idx] += 1
+        return
+
+    if base_idx > (read_length - (kmer_len - 1)):
+        min = base_idx - (kmer_len - 1)
+        for idx in range(min, max_kmer_idx + 1):
+            kmer_counter_list[idx] += 1
+        return
+
+    min = base_idx - (kmer_len - 1)
+    if base_idx > max_kmer_idx:
+        for idx in range(min, max_kmer_idx + 1):
+            kmer_counter_list[idx] += 1
+        return
+    for idx in range(min, base_idx + 1):
+        kmer_counter_list[idx] += 1
+    return
+
+def give_kmer_multiplicity(kmer_spectrum, kmer):
+    return 100
+
+def lookahead_validation(
+    kmer_length,
+    local_read,
+    kmer_spectrum,
+    modified_base_idx,
+    alternative_base,
+    neighbors_max_count=2,
+):
+    # this is for base that has kmers that covers < neighbors_max_count
+    if modified_base_idx < neighbors_max_count:
+        num_possible_neighbors = modified_base_idx + 1
+        counter = modified_base_idx
+        min_idx = 0
+        for _ in range(num_possible_neighbors):
+            alternative_kmer = local_read[min_idx: min_idx+kmer_length]
+            alternative_kmer[counter] = alternative_base
+
+            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+                return False
+            min_idx += 1
+            counter -= 1
+    # for bases that are modified outside the "easy range"
+    if modified_base_idx >= len(local_read) - kmer_length:
+        num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
+
+        min_idx = modified_base_idx - (kmer_length - 1)
+        max_idx = modified_base_idx
+        counter = kmer_length - 1
+
+        for _ in range(num_possible_neighbors):
+            alternative_kmer = local_read[min_idx: min_idx + kmer_length]
+            alternative_kmer[counter] = alternative_base
+            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+                return False
+            min_idx += 1
+            counter -= 1
+
+    if modified_base_idx < (kmer_length - 1):
+        min_idx = 0
+        max_idx = kmer_length
+        counter = modified_base_idx
+    else:
+        # this is the modified base idx that are within the range of "easy range"
+        min_idx = modified_base_idx - (kmer_length - 1)
+        max_idx = modified_base_idx
+        counter = kmer_length - 1
+
+    print(f"counter: {counter} min idx: {min_idx} max idx: {max_idx}")
+    for _idx in range(neighbors_max_count):
+        if min_idx > max_idx:
+            return False
+        alternative_kmer = local_read[min_idx : min_idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+
+        min_idx += 1
+        counter -= 1
+
+    # returned True meaning the alternative base which sequencing error occurs is (valid)?
+    return True

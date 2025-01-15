@@ -1,4 +1,3 @@
-
 import cudf
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
@@ -299,10 +298,17 @@ def lookahead_validation(
             min_idx += 1
             counter -= 1
 
+
     # this is the modified base idx that are within the range of "easy range"
-    min_idx = modified_base_idx - (kmer_length - 1)
-    max_idx = modified_base_idx
-    counter = kmer_length - 1
+    if modified_base_idx < (kmer_length - 1):
+        min_idx = 0
+        max_idx = kmer_length
+        counter = modified_base_idx
+    else:
+        # this is the modified base idx that are within the range of "easy range"
+        min_idx = modified_base_idx - (kmer_length - 1)
+        max_idx = modified_base_idx
+        counter = kmer_length - 1
 
     for _idx in range(neighbors_max_count):
         if min_idx > max_idx:

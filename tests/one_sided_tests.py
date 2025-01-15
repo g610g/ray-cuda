@@ -1,7 +1,8 @@
 import unittest
 import numpy as np
 from numpy.testing import assert_equal, assert_array_equal
-from tests.test_modules import identify_trusted_regions
+from test_modules import identify_trusted_regions
+from test_correction_modules import correct_read_one_sided_right,correct_read_one_sided_left
 
 
 class OneSidedTests(unittest.TestCase):
@@ -10,6 +11,11 @@ class OneSidedTests(unittest.TestCase):
         spectrum = []
         kmer_length = 13
         local_read = [1, 3, 2, 1, 2, 4, 1, 2, 3, 5, 4, 3, 4, 2, 1, 3, 5, 3, 2, 3]
+        alternatives = np.zeros((4, 2), dtype="uint32")
+        num_kmers  = len(local_read) - (kmer_length - 1)
+        correction_tracker = np.zeros(MAX_LEN, dtype="uint8")
+        bases = np.zeros(4, dtype="uint8") 
+        start, end = 0, len(local_read)
         region_indices = np.zeros((10, 2), dtype="int8")
         solids = np.zeros(MAX_LEN, dtype="int8")
 
@@ -17,14 +23,123 @@ class OneSidedTests(unittest.TestCase):
         for idx in range(len(local_read)):
             solids[idx] = -1
 
+        #seeding bases
+        for idx in range(4):
+            bases[idx] = idx + 1
+
         generate_kmers(local_read, kmer_length, spectrum)
         max_idx = len(local_read) - 1
         #modify local read to simulate read with error bases
         #trying to put error within ends of the read
         local_read[0], local_read[1], local_read[2] = 2, 2, 1
+        local_read[0], local_read[1], local_read[2] = 2, 2, 1
         local_read[max_idx], local_read[max_idx - 1], local_read[max_idx - 2] = 2, 1, 2
 
-        identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+        regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+
+        if regions_count == 0:
+                return
+            # no unit tests for this part yet
+        for region in range(regions_count):
+            # going towards right of the region
+
+            # there is no next region
+            if region == (regions_count - 1):
+                region_end = region_indices[region][1]
+
+                # while we are not at the end base of the read
+                while region_end != (end - start) - 1:
+                    if not correct_read_one_sided_right(
+                        local_read,
+                        region_end,
+                        spectrum,
+                        kmer_length,
+                        bases,
+                        alternatives,
+                        correction_tracker,
+                        num_kmers - 1,
+                        end - start,
+                    ):
+                        break
+
+                    # extend the portion of region end for successful correction
+                    else:
+                        region_end += 1
+                        region_indices[region][1] = region_end
+
+            # there is a next region
+            if region != (regions_count - 1):
+                region_end = region_indices[region][1]
+                next_region_start = region_indices[region + 1][0]
+
+                # the loop will not stop until it does not find another region
+                while region_end != (next_region_start - 1):
+                    if not correct_read_one_sided_right(
+                        local_read,
+                        region_end,
+                        spectrum,
+                        kmer_length,
+                        bases,
+                        alternatives,
+                        correction_tracker,
+                        num_kmers - 1,
+                        end - start,
+                    ):
+                        # fails to correct this region and on this orientation
+                        break
+
+                    # extend the portion of region end for successful correction
+                    else:
+                        region_end += 1
+                        region_indices[region][1] = region_end
+
+            # going towards left of the region
+            # we are the leftmost region
+            if region - 1 == -1:
+                region_start = region_indices[region][0]
+
+                # while we are not at the first base of the read
+                while region_start != 0:
+                    if not correct_read_one_sided_left(
+                        local_read,
+                        region_start,
+                        spectrum,
+                        kmer_length,
+                        bases,
+                        alternatives,
+                        correction_tracker,
+                        num_kmers - 1,
+                        end - start,
+                    ):
+                        break
+                    else:
+                        region_start -= 1
+                        region_indices[region][0] = region_start
+
+            # there is another region in the left side of this region
+            if region - 1 != -1:
+                region_start, prev_region_end = (
+                    region_indices[region][0],
+                    region_indices[region - 1][1],
+                )
+                while region_start - 1 != (prev_region_end):
+
+                    if not correct_read_one_sided_left(
+                        local_read,
+                        region_start,
+                        spectrum,
+                        kmer_length,
+                        bases,
+                        alternatives,
+                        correction_tracker,
+                        num_kmers - 1,
+                        end - start,
+                    ):
+                        break
+                    else:
+                        region_start -= 1
+                        region_indices[region][0] = region_start
+
 
         print(solids)
         print(region_indices)
@@ -167,7 +282,7 @@ class OneSidedTests(unittest.TestCase):
                 alternative_kmer = local_read[min_idx: min_idx + kmer_length]
                 alternative_kmer[counter] = alternative_base
                 transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
-                print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter} alternative kmer: {transformed_alternative_kmer}")
+                # print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter} alternative kmer: {transformed_alternative_kmer}")
 
                 if not in_spectrum(transformed_alternative_kmer, kmer_spectrum):
                     return False
