@@ -28,6 +28,7 @@ class OneSidedTests(unittest.TestCase):
             bases[idx] = idx + 1
 
         generate_kmers(local_read, kmer_length, spectrum)
+        print(spectrum)
         max_idx = len(local_read) - 1
         #modify local read to simulate read with error bases
         #trying to put error within ends of the read
@@ -36,6 +37,9 @@ class OneSidedTests(unittest.TestCase):
         local_read[max_idx], local_read[max_idx - 1], local_read[max_idx - 2] = 2, 1, 2
 
         regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+
+        print(solids)
+        print(region_indices)
 
         if regions_count == 0:
                 return
@@ -60,6 +64,7 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
+                        print(f"Correction toward right for idx: {region_end} is not successful ")
                         break
 
                     # extend the portion of region end for successful correction
@@ -86,6 +91,7 @@ class OneSidedTests(unittest.TestCase):
                         end - start,
                     ):
                         # fails to correct this region and on this orientation
+                        print(f"Correction toward right for idx: {region_end} is not successful ")
                         break
 
                     # extend the portion of region end for successful correction
@@ -111,6 +117,7 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
+                        print(f"Correction toward right for idx: {region_start} is not successful ")
                         break
                     else:
                         region_start -= 1
@@ -135,15 +142,20 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
+                        print(f"Correction toward right for idx: {region_start} is not successful ")
                         break
                     else:
                         region_start -= 1
                         region_indices[region][0] = region_start
 
 
+        
+        regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+
+        print("After correction")
+
         print(solids)
         print(region_indices)
-
     def identify_trusted_regions(self, solids, kmer_len):
         current_indices_idx = 0
         base_count = 0

@@ -1,4 +1,10 @@
-from test_modules import in_spectrum, transform_to_key, give_kmer_multiplicity, mark_kmer_counter,lookahead_validation
+from test_modules import (
+    in_spectrum,
+    transform_to_key,
+    give_kmer_multiplicity,
+    mark_kmer_counter,
+    lookahead_validation,
+)
 
 
 def correct_read_one_sided_right(
@@ -28,15 +34,22 @@ def correct_read_one_sided_right(
     if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(
         kmer_spectrum, forward_kmer_transformed
     ):
-
         # find alternative  base
         for alternative_base in bases:
             forward_kmer[-1] = alternative_base
             candidate_kmer = transform_to_key(forward_kmer, kmer_len)
-
-            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_end + 1, alternative_base, neighbors_max_count=2):
-
+            
+            # if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
+            print(region_end + 1)
+            passed_lookahead = lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_end + 1,
+                alternative_base,
+                neighbors_max_count=2,
+            )
+            if in_spectrum(kmer_spectrum, candidate_kmer) and passed_lookahead :
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
                     alternative_base,
@@ -46,6 +59,7 @@ def correct_read_one_sided_right(
                 alternative = alternative_base
 
     # returning false will should cause the caller to break the loop since it fails to correct (base on the Musket paper)
+    print(f"Possibility: {possibility}")
     if possibility == 0:
         return False
 
@@ -101,8 +115,15 @@ def correct_read_one_sided_left(
             backward_kmer[0] = alternative_base
             candidate_kmer = transform_to_key(backward_kmer, kmer_len)
 
-            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_start - 1, alternative_base, neighbors_max_count=2):
+            # if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
+            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_start - 1,
+                alternative_base,
+                neighbors_max_count=2,
+            ):
 
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
@@ -114,6 +135,7 @@ def correct_read_one_sided_left(
                 alternative = alternative_base
 
     # returning false should cause the caller to break the loop since it fails to correct (base on the Musket paper)
+    print(f"Possibility: {possibility}")
     if possibility == 0:
         return False
 
