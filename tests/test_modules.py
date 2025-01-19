@@ -3,20 +3,24 @@ def in_spectrum(spectrum, kmer):
         return True
     return False
 
+
 def mark_solids_array(solids, start, end):
 
     for i in range(start, end):
         solids[i] = 1
 
+
 def transform_to_key(ascii_kmer, len):
     multiplier = 1
     key = 0
-    while(len != 0):
-        key += (ascii_kmer[len - 1] * multiplier)
+    while len != 0:
+        key += ascii_kmer[len - 1] * multiplier
         multiplier *= 10
         len -= 1
 
     return key
+
+
 def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
 
     for idx in range(0, (end - start) - (kmer_len - 1)):
@@ -27,6 +31,7 @@ def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solid
         # set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
             mark_solids_array(solids, idx, (idx + kmer_len))
+
 
 def identify_trusted_regions(
     start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids
@@ -77,9 +82,6 @@ def identify_trusted_regions(
     return current_indices_idx
 
 
-
-
-
 def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
     if base_idx < kmer_len:
         for idx in range(0, base_idx + 1):
@@ -101,8 +103,10 @@ def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_
         kmer_counter_list[idx] += 1
     return
 
+
 def give_kmer_multiplicity(kmer_spectrum, kmer):
     return 100
+
 
 def lookahead_validation(
     kmer_length,
@@ -112,20 +116,24 @@ def lookahead_validation(
     alternative_base,
     neighbors_max_count=2,
 ):
+
     # this is for base that has kmers that covers < neighbors_max_count
     if modified_base_idx < neighbors_max_count:
         num_possible_neighbors = modified_base_idx + 1
         counter = modified_base_idx
         min_idx = 0
         for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx: min_idx+kmer_length]
+            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
             alternative_kmer[counter] = alternative_base
 
-            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            transformed_alternative_kmer = transform_to_key(
+                alternative_kmer, kmer_length
+            )
             if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
                 return False
             min_idx += 1
             counter -= 1
+        return True
     # for bases that are modified outside the "easy range"
     if modified_base_idx >= len(local_read) - kmer_length:
         num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
@@ -133,15 +141,24 @@ def lookahead_validation(
         min_idx = modified_base_idx - (kmer_length - 1)
         max_idx = modified_base_idx
         counter = kmer_length - 1
-
+        print(
+            f"For modified base that is greater than read len - kmer len,  counter: {counter} min idx: {min_idx} max idx: {max_idx}"
+        )
+        print(num_possible_neighbors)
         for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx: min_idx + kmer_length]
+            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
             alternative_kmer[counter] = alternative_base
-            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            transformed_alternative_kmer = transform_to_key(
+                alternative_kmer, kmer_length
+            )
             if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+                print(f"Alternative bases that returns False {alternative_base}  {transformed_alternative_kmer}")
                 return False
+            print(f"Alternative bases that returns True {alternative_base}  {transformed_alternative_kmer}")
             min_idx += 1
             counter -= 1
+
+        return True
 
     if modified_base_idx < (kmer_length - 1):
         min_idx = 0
@@ -162,9 +179,10 @@ def lookahead_validation(
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
-
         min_idx += 1
         counter -= 1
-
-    # returned True meaning the alternative base which sequencing error occurs is (valid)?
     return True
+
+def generate_kmers(read, kmer_length, kmer_spectrum):
+    for idx in range(0, len(read) - (kmer_length - 1)):
+        kmer_spectrum.append(transform_to_key(read[idx: idx + kmer_length], kmer_length))

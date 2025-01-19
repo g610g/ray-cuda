@@ -1,7 +1,8 @@
 import unittest
 import numpy as np
-from numpy.testing import assert_equal, assert_array_equal
-from test_modules import identify_trusted_regions
+from numpy import random
+from numpy.testing import assert_array_equal
+from test_modules import identify_trusted_regions, generate_kmers
 from test_correction_modules import correct_read_one_sided_right,correct_read_one_sided_left
 
 
@@ -10,9 +11,13 @@ class OneSidedTests(unittest.TestCase):
         MAX_LEN = 300
         spectrum = []
         kmer_length = 13
-        local_read = [1, 3, 2, 1, 2, 4, 1, 2, 3, 5, 4, 3, 4, 2, 1, 3, 5, 3, 2, 3]
+        local_read = random.randint(1, 4, 100, dtype='uint8')
+
+        #array used to store base alternative and its corresponding kmer count
         alternatives = np.zeros((4, 2), dtype="uint32")
         num_kmers  = len(local_read) - (kmer_length - 1)
+
+        #array that keep tracks of corrections made for every kmer
         correction_tracker = np.zeros(MAX_LEN, dtype="uint8")
         bases = np.zeros(4, dtype="uint8") 
         start, end = 0, len(local_read)
@@ -27,20 +32,18 @@ class OneSidedTests(unittest.TestCase):
         for idx in range(4):
             bases[idx] = idx + 1
 
+
         generate_kmers(local_read, kmer_length, spectrum)
-        print(spectrum)
-        max_idx = len(local_read) - 1
-        #modify local read to simulate read with error bases
-        #trying to put error within ends of the read
-        local_read[0], local_read[1], local_read[2] = 2, 2, 1
-        local_read[0], local_read[1], local_read[2] = 2, 2, 1
-        local_read[max_idx], local_read[max_idx - 1], local_read[max_idx - 2] = 2, 1, 2
+
+        #modify random bases in the local read
+        for _ in range(10):
+            random_idx = random.randint(48, 70)
+            local_read[random_idx] = random.randint(1,4)
 
         regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
 
         print(solids)
         print(region_indices)
-
         if regions_count == 0:
                 return
             # no unit tests for this part yet
@@ -64,11 +67,12 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward right for idx: {region_end} is not successful ")
+                        print(f"Correction toward right for idx: {region_end} is not successful")
                         break
 
                     # extend the portion of region end for successful correction
                     else:
+                        print(f"Correction in index {region_end + 1} orientation going right is succesful")
                         region_end += 1
                         region_indices[region][1] = region_end
 
@@ -96,6 +100,7 @@ class OneSidedTests(unittest.TestCase):
 
                     # extend the portion of region end for successful correction
                     else:
+                        print(f"Correction in index {region_end + 1} orientation going right is succesful")
                         region_end += 1
                         region_indices[region][1] = region_end
 
@@ -117,9 +122,10 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward right for idx: {region_start} is not successful ")
+                        print(f"Correction toward left for idx: {region_start} is not successful ")
                         break
                     else:
+                        print(f"Correction in index {region_start - 1} orientation going left is succesful")
                         region_start -= 1
                         region_indices[region][0] = region_start
 
@@ -142,17 +148,21 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward right for idx: {region_start} is not successful ")
+                        print(f"Correction toward left for idx: {region_start} is not successful ")
                         break
                     else:
+                        print(f"Correction in index {region_start - 1} orientation going left is successful")
                         region_start -= 1
                         region_indices[region][0] = region_start
 
 
-        
+        #reinitialize solids array
+        for idx in range(len(local_read)):
+            solids[idx] = -1
+
         regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
 
-        print("After correction")
+        print("Result after correction")
 
         print(solids)
         print(region_indices)
@@ -243,92 +253,6 @@ class OneSidedTests(unittest.TestCase):
 
         assert_array_equal(np.array([1, 0, 0, 0, 0, 0, 0, 0, 0]),kmer_counter_list) 
 
-    #testing for 3mers
-    def test_onesided_lookahead(self):
-        spectrum = []
-        kmer_length = 13
-        local_read = [1, 3, 2, 1, 2, 4, 1, 2, 3, 5, 4, 3, 4, 2, 1, 3, 5, 3, 2, 3]
-
-        #add in spectrum
-        for idx in range(0, len(local_read) - (kmer_length - 1)):
-            spectrum.append(self.transform_to_key(local_read[idx: idx + kmer_length], kmer_length))
-
-        max_idx = len(local_read) - 1
-        local_read[max_idx] = 4
-        res = self.lookahead_validation(kmer_length, local_read, spectrum, max_idx, 3)
-        assert_equal(True, res)
-
-    def lookahead_validation(
-        self,
-        kmer_length,
-        local_read,
-        kmer_spectrum,
-        modified_base_idx,
-        alternative_base,
-        neighbors_max_count=2,
-    ):
-        # this is for base that has kmers that covers < neighbors_max_count
-        if modified_base_idx < neighbors_max_count:
-            num_possible_neighbors = modified_base_idx + 1
-            counter = modified_base_idx
-            min_idx = 0
-            for _ in range(num_possible_neighbors):
-                alternative_kmer = local_read[min_idx: min_idx+kmer_length]
-                alternative_kmer[counter] = alternative_base
-                transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
-                print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter} alternative kmer: {transformed_alternative_kmer}")
-                if not in_spectrum( transformed_alternative_kmer, kmer_spectrum):
-                    return False
-                min_idx += 1
-                counter -= 1
-            return True
-
-        # for bases that are modified outside the "easy range"
-        if modified_base_idx >= len(local_read) - neighbors_max_count:
-            num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
-            min_idx = modified_base_idx - (kmer_length - 1)
-            max_idx = modified_base_idx
-            counter = kmer_length - 1
-
-            for _ in range(num_possible_neighbors + 1):
-                alternative_kmer = local_read[min_idx: min_idx + kmer_length]
-                alternative_kmer[counter] = alternative_base
-                transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
-                # print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter} alternative kmer: {transformed_alternative_kmer}")
-
-                if not in_spectrum(transformed_alternative_kmer, kmer_spectrum):
-                    return False
-                min_idx += 1
-                counter -= 1
-            return True
-
-        if modified_base_idx < (kmer_length - 1):
-            min_idx = 0
-            max_idx = kmer_length
-            counter = modified_base_idx
-        else:
-            # this is the modified base idx that are within the range of "easy range"
-            min_idx = modified_base_idx - (kmer_length - 1)
-            max_idx = modified_base_idx
-            counter = kmer_length - 1
-
-        for _idx in range(neighbors_max_count):
-            if min_idx > max_idx:
-                return False
-            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
-            print(f"alternative kmer: {alternative_kmer}")
-            print(f"min index: {min_idx}, max idx: {min_idx + kmer_length} counter: {counter}")
-            alternative_kmer[counter] = alternative_base
-            transformed_alternative_kmer = self.transform_to_key(alternative_kmer, kmer_length)
-            if not in_spectrum(transformed_alternative_kmer, kmer_spectrum):
-                return False
-
-            min_idx += 1
-            counter -= 1
-
-        # returned True meaning the alternative base which sequencing error occurs is (valid)?
-        return True
-
     def mark_kmer_counter(self, base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
         if base_idx < (kmer_len - 1):
             for idx in range(0, base_idx + 1):
@@ -374,9 +298,6 @@ def in_spectrum(kmer, spectrum):
         return True
 
     return False
-def generate_kmers(read, kmer_length, kmer_spectrum):
-    for idx in range(0, len(read) - (kmer_length - 1)):
-        kmer_spectrum.append(transform_to_key(read[idx: idx + kmer_length], kmer_length))
 
 if __name__ == '__main__':
     unittest.main()

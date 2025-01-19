@@ -133,11 +133,9 @@ def remote_two_sided(
         dev_reads_1d,
         dev_offsets,
         kmer_len,
-        dev_solids_after,
         not_corrected_counter,
         kmers_tracker,
     )
-    # voting_algo[bpg, tbp](dev_reads_1d, dev_offsets, dev_kmer_spectrum, kmer_len)
 
     # calculates the solidity of kmer after one sided correction and voting based
     calculate_reads_solidity[bpg, tbp](

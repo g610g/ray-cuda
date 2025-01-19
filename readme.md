@@ -44,5 +44,5 @@
 
 
 # TESTING PROBLEM
-- When modified idx is less than k-len, the calculated starting index will be negative
+- During lookahead validation, bases at each end of the read doesnt have any neighbor
 - 

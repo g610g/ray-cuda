@@ -258,14 +258,14 @@ def count_error_reads(solids_batch, len):
     print(f"error reads detected: {error_reads}")
 
 
-@cuda.jit
+@cuda.jit(device=True)
 def lookahead_validation(
     kmer_length,
     local_read,
     kmer_spectrum,
     modified_base_idx,
     alternative_base,
-    neighbors_max_count=2,
+    neighbors_max_count,
 ):
     # this is for base that has kmers that covers < neighbors_max_count
     if modified_base_idx < neighbors_max_count:
@@ -273,14 +273,17 @@ def lookahead_validation(
         counter = modified_base_idx
         min_idx = 0
         for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx: min_idx+kmer_length]
+            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
             alternative_kmer[counter] = alternative_base
 
-            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            transformed_alternative_kmer = transform_to_key(
+                alternative_kmer, kmer_length
+            )
             if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
                 return False
             min_idx += 1
             counter -= 1
+        return True
     # for bases that are modified outside the "easy range"
     if modified_base_idx >= len(local_read) - kmer_length:
         num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
@@ -288,18 +291,19 @@ def lookahead_validation(
         min_idx = modified_base_idx - (kmer_length - 1)
         max_idx = modified_base_idx
         counter = kmer_length - 1
-
         for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx: min_idx + kmer_length]
+            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
             alternative_kmer[counter] = alternative_base
-            transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+            transformed_alternative_kmer = transform_to_key(
+                alternative_kmer, kmer_length
+            )
             if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
                 return False
             min_idx += 1
             counter -= 1
 
+        return True
 
-    # this is the modified base idx that are within the range of "easy range"
     if modified_base_idx < (kmer_length - 1):
         min_idx = 0
         max_idx = kmer_length
@@ -318,9 +322,8 @@ def lookahead_validation(
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
-
         min_idx += 1
         counter -= 1
 
-    # returned True meaning the alternative base which sequencing error occurs is (valid)?
     return True
+    # returned True meaning the alternative base which sequencing error occurs is (valid)?

@@ -7,6 +7,7 @@ from shared_helpers import (
     mark_kmer_counter,
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity, copy_solids
+from voting import apply_vm_result, invoke_voting
 
 
 @cuda.jit
@@ -129,7 +130,6 @@ def one_sided_kernel(
     reads,
     offsets,
     kmer_len,
-    solids_after,
     not_corrected_counter,
     kmers_tracker,
 ):
@@ -146,7 +146,7 @@ def one_sided_kernel(
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         correction_tracker = cuda.local.array(MAX_LEN, dtype="uint8")
         original_read = cuda.local.array(MAX_LEN, dtype="uint8")
-
+        voting_matrix = cuda.local.array((4, MAX_LEN), dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
         num_kmers = (end - start) - (kmer_len - 1)
         max_correction = 4
@@ -284,14 +284,34 @@ def one_sided_kernel(
                             region_start -= 1
                             region_indices[region][0] = region_start
 
+            # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
+            for idx in range(start, end - (kmer_len - 1)):
+                curr_kmer = transform_to_key(local_read[idx : idx + kmer_len], kmer_len)
+
+                # invoke voting if the kmer is not in spectrum
+                if not in_spectrum(kmer_spectrum, curr_kmer):
+                    invoke_voting(
+                        voting_matrix,
+                        kmer_spectrum,
+                        bases,
+                        kmer_len,
+                        idx,
+                        local_read,
+                        start,
+                    )
+
+            # apply the result of the vm into the reads
+            apply_vm_result(voting_matrix, local_read, start, end)
+        # endfor
+
         # checking if there are kmers that has been corrected more than once
         for idx in range(num_kmers):
             kmers_tracker[threadIdx][idx] = correction_tracker[idx]
 
-        #add voting based right here with tracking of corrections
+        # add voting based right here with tracking of corrections
 
         # after the correction, check the tracker if any kmer has number of corrections greater than max corrections
-        
+
         check_tracker(
             num_kmers,
             correction_tracker,
@@ -305,6 +325,7 @@ def one_sided_kernel(
             reads[idx + start] = local_read[idx]
 
 
+# for orientation going to the right of the read
 @cuda.jit(device=True)
 def correct_read_one_sided_right(
     local_reads,
@@ -334,13 +355,22 @@ def correct_read_one_sided_right(
         kmer_spectrum, forward_kmer_transformed
     ):
 
-        # find alternative  base
+        # foreach alternative base
         for alternative_base in bases:
             forward_kmer[-1] = alternative_base
             candidate_kmer = transform_to_key(forward_kmer, kmer_len)
 
-            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_end + 1, alternative_base, neighbors_max_count=2):
+            is_potential_correction = lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_end + 1,
+                alternative_base,
+                2,
+            )
+
+            # if the candidate kmer is in the spectrum and has addition evidence that alternative base in trusted as correction by assessing neighbor kmers
+            if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
 
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
@@ -377,7 +407,7 @@ def correct_read_one_sided_right(
         return True
 
 
-#for orientation going to the left of the read
+# for orientation going to the left of the read
 @cuda.jit(device=True)
 def correct_read_one_sided_left(
     local_reads,
@@ -407,16 +437,21 @@ def correct_read_one_sided_left(
         for alternative_base in bases:
             backward_kmer[0] = alternative_base
             candidate_kmer = transform_to_key(backward_kmer, kmer_len)
-
-            #if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            if in_spectrum(kmer_spectrum, candidate_kmer) and lookahead_validation(kmer_len, local_reads, kmer_spectrum, region_start - 1, alternative_base, neighbors_max_count=2):
-
+            is_potential_correction = lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_start - 1,
+                alternative_base,
+                2,
+            )
+            # if the candidate kmer is in the spectrum and has addition evidence that alternative base in trusted as correction by assessing neighbor kmers
+            if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
                 # alternative base and its corresponding kmer count
                 alternatives[possibility][0], alternatives[possibility][1] = (
                     alternative_base,
                     give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
                 )
-
                 possibility += 1
                 alternative = alternative_base
 
