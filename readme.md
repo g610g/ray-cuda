@@ -1,19 +1,11 @@
 # TODOS
 
-- The program should be able to accept configs or environment variables
-- Create a bash script to capture env variables and run the python parallel script
-- Distribute the reads near even to the available GPU for a more faster execution time of the multistage on the whole dataset
+- Voting base refinement has no effect at the result, I should examine it properly if my understanding is sakto and generate a proper test cases to validate nga sakto ang akoang code for it.
+- Check the solids array produced after doing two sided correction
 
-- Produce accuracy results from our correction method. (resolved)
 
-- Complete first all of the error correction algorithm (partially done)
 
-- We will stick with using small length of kmer as of the moment and try to force if we can get a good gain value. result: (its hard to push low kmer len, minimum length should be 13 for kmer to work properly)
 
-- GPU threads are accessing elements on a non coalesced way plus the problem of thread divergence. We should try to achieve this with minor changes on the kernel implementation 
-
-- Querying the spectrum is a bottleneck since on Musket, they can use hash table which takes O(1) querying as compared to ours where we can only have a max of O(logn) querying optimization.(Partially solved)
--Create unit tests for one sided correction in order to validate implementation and logics
 
  
 # FINISHED
@@ -45,4 +37,4 @@
 
 # TESTING PROBLEM
 - During lookahead validation, bases at each end of the read doesnt have any neighbor
-- 
+- Since two sided cannot correct bases that are at the leftmost and rightmost, it fails to correct those erroneous bases. We try to let one sided handle that case. If ang solids array is something like [-1, 1, 1, -1, -1, -1] with a kmer length of 3, ang mga last 3 bases, dili na sha ma correct. Probably ang first base is pwede sha ma correct because sa kana nga kmer, naa lay isa ka sequencing error. 

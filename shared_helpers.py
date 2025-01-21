@@ -254,6 +254,7 @@ def count_error_reads(solids_batch, len):
         for idx in range(len):
             if solid[idx] == -1:
                 error_reads += 1
+                print(solid)
                 break
     print(f"error reads detected: {error_reads}")
 

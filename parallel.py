@@ -95,7 +95,7 @@ def check_corrections(kmers_tracker):
 
 
 @ray.remote(num_gpus=1, num_cpus=2)
-def remote_two_sided(
+def remote_core_correction(
     kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter
 ):
     cuda.profile_start()
@@ -117,17 +117,25 @@ def remote_two_sided(
     tbp = 512
     bpg = offsets.shape[0] // tbp
 
-    for _ in range(two_sided_iter):
-        two_sided_kernel[bpg, tbp](
-            dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len
-        )
-
-    # calculates the solidity of kmer before one sided correction and voting based
+    # calculates the solidity of kmer before corrections happen
     calculate_reads_solidity[bpg, tbp](
         dev_reads_1d, dev_offsets, dev_solids, kmer_len, dev_kmer_spectrum
     )
 
-    # voting algo should happen then after conducting one sided (not yet refactored)
+    # invoking the two sided correction kernel
+    two_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+    )
+
+    # calculates the solidity of kmer after two sided correction
+    calculate_reads_solidity[bpg, tbp](
+        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
+    )
+
+    # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tbp](
         dev_kmer_spectrum,
         dev_reads_1d,
@@ -135,11 +143,6 @@ def remote_two_sided(
         kmer_len,
         not_corrected_counter,
         kmers_tracker,
-    )
-
-    # calculates the solidity of kmer after one sided correction and voting based
-    calculate_reads_solidity[bpg, tbp](
-        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
     )
 
     end.record()
@@ -316,25 +319,25 @@ if __name__ == "__main__":
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
     [solids_before, solids_after, corrected_reads_array, kmers_tracker] = ray.get(
-        remote_two_sided.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2)
+        remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2)
     )
 
-    # print("reads solidity after one sided and voting based algorithm")
-    # ray.get(
-    #     [
-    #         count_error_reads.remote(
-    #             solids_after[batch_idx : batch_idx + batch_size], 100
-    #         )
-    #         for batch_idx in range(0, len(solids_after), batch_size)
-    #     ]
-    # )
-    print("Number of kmers that exceeds maximal allowed corrections")
+    print("reads solidity before two sided")
     ray.get(
         [
-            check_corrections.remote(kmers_tracker[batch_idx : batch_idx + batch_size])
-            for batch_idx in range(0, len(kmers_tracker), batch_size)
+            count_error_reads.remote(
+                solids_before[batch_idx : batch_idx + batch_size], 100
+            )
+            for batch_idx in range(0, len(solids_before), batch_size)
         ]
     )
+    # print("Number of kmers that exceeds maximal allowed corrections")
+    # ray.get(
+    #     [
+    #         check_corrections.remote(kmers_tracker[batch_idx : batch_idx + batch_size])
+    #         for batch_idx in range(0, len(kmers_tracker), batch_size)
+    #     ]
+    # )
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(

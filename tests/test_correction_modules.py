@@ -7,6 +7,56 @@ from test_modules import (
 )
 
 
+def correct_reads_two_sided(
+    idx,
+    local_reads,
+    kmer_len,
+    kmer_spectrum,
+    bases,
+    left_kmer,
+    right_kmer,
+):
+    current_base = local_reads[idx]
+    posibility = 0
+    candidate = -1
+
+    for alternative_base in bases:
+        if alternative_base != current_base:
+
+            # array representation
+            left_kmer[-1] = alternative_base
+            right_kmer[0] = alternative_base
+
+            # whole number representation
+            candidate_left = transform_to_key(left_kmer, kmer_len)
+            candidate_right = transform_to_key(right_kmer, kmer_len)
+
+            # the alternative base makes our kmers trusted
+            if in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(
+                kmer_spectrum, candidate_right
+            ):
+                posibility += 1
+                candidate = alternative_base
+
+    if posibility == 1:
+        local_reads[idx] = candidate
+        # corrected_counter[threadIdx][counter] = posibility
+        # counter += 1
+
+    if posibility == 0:
+        pass
+        # corrected_counter[threadIdx][counter] = 10
+        # counter += 1
+
+    # ignore the correction if more than one possibility
+    if posibility > 1:
+        pass
+        # corrected_counter[threadIdx][counter] = posibility
+        # counter += 1
+
+    # return counter
+
+
 def correct_read_one_sided_right(
     local_reads,
     region_end,
@@ -24,48 +74,34 @@ def correct_read_one_sided_right(
 
     # this is already unit tested that the indexing is correct and I assume that it wont access elements out of bounds since the while loop caller of this function will stop
     # if the region_end has found neighbor region or is at the end of the index
-    curr_kmer = local_reads[(region_end - (kmer_len - 1)) : region_end + 1]
     forward_kmer = local_reads[(region_end - (kmer_len - 1)) + 1 : region_end + 2]
 
-    curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len)
-    forward_kmer_transformed = transform_to_key(forward_kmer, kmer_len)
+    for alternative_base in bases:
+        forward_kmer[-1] = alternative_base
+        candidate_kmer = transform_to_key(forward_kmer, kmer_len)
 
-    # false implies failure
-    if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(
-        kmer_spectrum, forward_kmer_transformed
-    ):
-        # find alternative  base
-        for alternative_base in bases:
-            forward_kmer[-1] = alternative_base
-            candidate_kmer = transform_to_key(forward_kmer, kmer_len)
-            
-            # if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            is_potential_correction = lookahead_validation(
-                kmer_len,
-                local_reads,
-                kmer_spectrum,
-                region_end + 1,
+        if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
+            # alternative base and its corresponding kmer count
+            alternatives[possibility][0], alternatives[possibility][1] = (
                 alternative_base,
-                neighbors_max_count=2,
+                give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
             )
-            if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
-                # alternative base and its corresponding kmer count
-                alternatives[possibility][0], alternatives[possibility][1] = (
-                    alternative_base,
-                    give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
-                )
-                possibility += 1
-                alternative = alternative_base
+            possibility += 1
+            alternative = alternative_base
 
-    # returning false will should cause the caller to break the loop since it fails to correct (base on the Musket paper)
-    print(f"Possibility: {possibility}")
+    # Correction for this specific orientation and index is stopped
     if possibility == 0:
+        print(
+            f"Has {possibility} possiblity. Ending correction in index {region_end + 1}"
+        )
         return False
 
     # not sure if correct indexing for reads
     if possibility == 1:
 
         local_reads[region_end + 1] = alternative
+
+        # increase the number correction for this kmer
         mark_kmer_counter(
             region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
         )
@@ -74,14 +110,29 @@ def correct_read_one_sided_right(
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
         max = 0
+        chosen_alternative_base = -1
+        chosen_alternative_base_occurence = -1
         for idx in range(possibility):
-            if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
-                max = idx
+            is_potential_correction = lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_end + 1,
+                alternatives[idx][0],
+                neighbors_max_count=2,
+            )
+            if is_potential_correction:
+                # find greatest occurence out of all
+                if alternatives[idx][1] > chosen_alternative_base_occurence:
+                    chosen_alternative_base = alternatives[idx][0]
+                    chosen_alternative_base_occurence = alternatives[idx][1]
 
-        local_reads[region_end + 1] = alternatives[max][0]
-        mark_kmer_counter(
-            region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        if chosen_alternative_base != -1 and chosen_alternative_base_occurence != -1:
+            local_reads[region_end + 1] = alternatives[max][0]
+            # increase the number correction for this kmer
+            mark_kmer_counter(
+                region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
+            )
         return True
 
 
@@ -100,40 +151,24 @@ def correct_read_one_sided_left(
     possibility = 0
     alternative = -1
 
-    curr_kmer = local_reads[region_start : region_start + kmer_len]
     backward_kmer = local_reads[region_start - 1 : region_start + (kmer_len - 1)]
 
-    curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len)
-    backward_kmer_transformed = transform_to_key(backward_kmer, kmer_len)
+    # find alternative  base
+    for alternative_base in bases:
+        backward_kmer[0] = alternative_base
+        candidate_kmer = transform_to_key(backward_kmer, kmer_len)
 
-    if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(
-        kmer_spectrum, backward_kmer_transformed
-    ):
-        # find alternative  base
-        for alternative_base in bases:
-            backward_kmer[0] = alternative_base
-            candidate_kmer = transform_to_key(backward_kmer, kmer_len)
+        # if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
+        if in_spectrum(kmer_spectrum, candidate_kmer):
 
-            is_potential_correction = lookahead_validation(
-                kmer_len,
-                local_reads,
-                kmer_spectrum,
-                region_start - 1,
+            # alternative base and its corresponding kmer count
+            alternatives[possibility][0], alternatives[possibility][1] = (
                 alternative_base,
-                neighbors_max_count=2,
+                give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
             )
 
-            # if the candidate kmer is in the spectrum and it passes the lookahead validation step, then the alternative base is reserved as potential correction base
-            if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
-
-                # alternative base and its corresponding kmer count
-                alternatives[possibility][0], alternatives[possibility][1] = (
-                    alternative_base,
-                    give_kmer_multiplicity(kmer_spectrum, candidate_kmer),
-                )
-
-                possibility += 1
-                alternative = alternative_base
+            possibility += 1
+            alternative = alternative_base
 
     # returning false should cause the caller to break the loop since it fails to correct (base on the Musket paper)
     print(f"Possibility: {possibility}")
@@ -151,14 +186,29 @@ def correct_read_one_sided_left(
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
-
         max = 0
+        chosen_alternative_base = -1
+        chosen_alternative_base_occurence = -1
         for idx in range(possibility):
-            if alternatives[idx][1] + 1 >= alternatives[max][1] + 1:
-                max = idx
+            is_potential_correction = lookahead_validation(
+                kmer_len,
+                local_reads,
+                kmer_spectrum,
+                region_start - 1,
+                alternatives[idx][0],
+                neighbors_max_count=2,
+            )
+            if is_potential_correction:
+                # find greatest occurence out of all
+                if alternatives[idx][1] > chosen_alternative_base_occurence:
+                    chosen_alternative_base = alternatives[idx][0]
+                    chosen_alternative_base_occurence = alternatives[idx][1]
 
-        local_reads[region_start - 1] = alternatives[max][0]
-        mark_kmer_counter(
-            region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        if chosen_alternative_base != -1 and chosen_alternative_base_occurence != -1:
+            local_reads[region_start - 1] = alternatives[max][0]
+
+            # increase the number correction for this kmer
+            mark_kmer_counter(
+                region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
+            )
         return True

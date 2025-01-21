@@ -23,53 +23,55 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
         bases = cuda.local.array(4, dtype="uint8")
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         local_reads = cuda.local.array(300, dtype="uint8")
-
+        max_corrections = 2
         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(0, end - start):
             local_reads[idx] = reads[idx + start]
-
-        for i in range(end - start):
-            solids[i] = -1
-
         for i in range(4):
             bases[i] = i + 1
 
-        # identify whether base is solid or not
-        identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids)
+        for _ in range(max_corrections):
+            for i in range(end - start):
+                solids[i] = -1
 
-        # check whether base is potential for correction
-        # kulang pani diria sa pag check sa first and last bases
-        for base_idx in range(0, end - start):
-            # the base needs to be corrected
-            if (
-                solids[base_idx] == -1
-                and base_idx >= (kmer_len - 1)
-                and base_idx <= (end - start) - kmer_len
-            ):
+            # identify whether base is solid or not
+            identify_solid_bases(
+                local_reads, start, end, kmer_len, kmer_spectrum, solids
+            )
 
-                left_portion = local_reads[base_idx - (kmer_len - 1) : base_idx + 1]
-                right_portion = local_reads[base_idx : base_idx + kmer_len]
+            # check whether base is potential for correction
+            # kulang pani diria sa pag check sa first and last bases
+            for base_idx in range(0, end - start):
+                # the base needs to be corrected
+                if (
+                    solids[base_idx] == -1
+                    and base_idx >= (kmer_len - 1)
+                    and base_idx <= (end - start) - kmer_len
+                ):
 
-                correct_reads_two_sided(
-                    base_idx,
-                    local_reads,
-                    kmer_len,
-                    kmer_spectrum,
-                    bases,
-                    left_portion,
-                    right_portion,
-                )
+                    left_portion = local_reads[base_idx - (kmer_len - 1) : base_idx + 1]
+                    right_portion = local_reads[base_idx : base_idx + kmer_len]
 
-            # the leftmost bases of the read
-            if solids[base_idx] == -1 and base_idx < (kmer_len - 1):
-                pass
-            # the rightmost bases of the read
-            if solids[base_idx] == -1 and base_idx > (end - start) - kmer_len:
-                pass
+                    correct_reads_two_sided(
+                        base_idx,
+                        local_reads,
+                        kmer_len,
+                        kmer_spectrum,
+                        bases,
+                        left_portion,
+                        right_portion,
+                    )
 
-        # copy the reads from private memory back to the global memory
-        for idx in range(0, end - start):
-            reads[idx + start] = local_reads[idx]
+                # the leftmost bases of the read
+                if solids[base_idx] == -1 and base_idx < (kmer_len - 1):
+                    pass
+                # the rightmost bases of the read
+                if solids[base_idx] == -1 and base_idx > (end - start) - kmer_len:
+                    pass
+
+            # copy the reads from private memory back to the global memory
+            for idx in range(0, end - start):
+                reads[idx + start] = local_reads[idx]
 
 
 @cuda.jit(device=True)
@@ -115,6 +117,8 @@ def correct_reads_two_sided(
         # counter += 1
 
     # ignore the correction if more than one possibility
+    # check whether base is potential for correction
+    # kulang pani diria sa pag check sa first and last bases
     if posibility > 1:
         pass
         # corrected_counter[threadIdx][counter] = posibility
@@ -430,6 +434,7 @@ def correct_read_one_sided_left(
     curr_kmer_transformed = transform_to_key(curr_kmer, kmer_len)
     backward_kmer_transformed = transform_to_key(backward_kmer, kmer_len)
 
+    # If end kmer of trusted region is at the spectrum and when sliding the window, the result kmer is not trusted, then we assume that the end base of that kmer is the sequencing error
     if in_spectrum(kmer_spectrum, curr_kmer_transformed) and not in_spectrum(
         kmer_spectrum, backward_kmer_transformed
     ):
