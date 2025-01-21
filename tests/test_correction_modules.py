@@ -80,7 +80,7 @@ def correct_read_one_sided_right(
         forward_kmer[-1] = alternative_base
         candidate_kmer = transform_to_key(forward_kmer, kmer_len)
 
-        if in_spectrum(kmer_spectrum, candidate_kmer) and is_potential_correction:
+        if in_spectrum(kmer_spectrum, candidate_kmer):
             # alternative base and its corresponding kmer count
             alternatives[possibility][0], alternatives[possibility][1] = (
                 alternative_base,
@@ -96,6 +96,9 @@ def correct_read_one_sided_right(
         )
         return False
 
+    print(
+        f"{possibility} possiblity."
+    )
     # not sure if correct indexing for reads
     if possibility == 1:
 
@@ -133,8 +136,8 @@ def correct_read_one_sided_right(
             mark_kmer_counter(
                 region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
-        return True
-
+            return True
+        
 
 def correct_read_one_sided_left(
     local_reads,
@@ -147,7 +150,6 @@ def correct_read_one_sided_left(
     max_kmer_idx,
     read_length,
 ):
-
     possibility = 0
     alternative = -1
 
@@ -211,4 +213,4 @@ def correct_read_one_sided_left(
             mark_kmer_counter(
                 region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
-        return True
+            return True

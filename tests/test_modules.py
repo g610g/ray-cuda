@@ -117,70 +117,37 @@ def lookahead_validation(
     neighbors_max_count=2,
 ):
 
-    # this is for base that has kmers that covers < neighbors_max_count
-    if modified_base_idx < neighbors_max_count:
-        num_possible_neighbors = modified_base_idx + 1
-        counter = modified_base_idx
-        min_idx = 0
-        for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
-            alternative_kmer[counter] = alternative_base
-
-            transformed_alternative_kmer = transform_to_key(
-                alternative_kmer, kmer_length
-            )
-            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-                return False
-            min_idx += 1
-            counter -= 1
-        return True
-    # for bases that are modified outside the "easy range"
-    if modified_base_idx >= len(local_read) - kmer_length:
-        num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
-
-        min_idx = modified_base_idx - (kmer_length - 1)
-        max_idx = modified_base_idx
-        counter = kmer_length - 1
-        print(
-            f"For modified base that is greater than read len - kmer len,  counter: {counter} min idx: {min_idx} max idx: {max_idx}"
-        )
-        print(num_possible_neighbors)
-        for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
-            alternative_kmer[counter] = alternative_base
-            transformed_alternative_kmer = transform_to_key(
-                alternative_kmer, kmer_length
-            )
-            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-                print(f"Alternative bases that returns False {alternative_base}  {transformed_alternative_kmer}")
-                return False
-            print(f"Alternative bases that returns True {alternative_base}  {transformed_alternative_kmer}")
-            min_idx += 1
-            counter -= 1
-
+    #if no neighbors
+    if modified_base_idx > len(local_read) - kmer_length:
         return True
 
-    if modified_base_idx < (kmer_length - 1):
-        min_idx = 0
-        max_idx = kmer_length
-        counter = modified_base_idx
-    else:
-        # this is the modified base idx that are within the range of "easy range"
-        min_idx = modified_base_idx - (kmer_length - 1)
-        max_idx = modified_base_idx
-        counter = kmer_length - 1
+    #start index is after forward kmer. (That's why -2)
+    #I should calculate the number of neighbors available to check and the stride of neighbors to check
+    start_idx = modified_base_idx - (kmer_length - 2)
 
-    print(f"counter: {counter} min idx: {min_idx} max idx: {max_idx}")
-    for _idx in range(neighbors_max_count):
-        if min_idx > max_idx:
-            return False
-        alternative_kmer = local_read[min_idx : min_idx + kmer_length]
+    #calculated number of neighbors
+    available_neighbors = (len(local_read) - modified_base_idx) - 1
+    max_end_idx = modified_base_idx
+    counter = kmer_length - 2
+    neighbors_traversed = 0
+
+
+    for idx in range(start_idx, max_end_idx + 1):
+        #I might try to limit the max neighbors to be traversed
+        if neighbors_traversed >= neighbors_max_count:
+            break
+
+        alternative_kmer = local_read[idx: idx + kmer_length]
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            print(f"{transformed_alternative_kmer} is not in spectrum") 
             return False
-        min_idx += 1
+        print(f"counter: {counter}, start idx: {start_idx}, max end idx: {max_end_idx}, neighbors available: {available_neighbors}")
+        print(f"{transformed_alternative_kmer} exists")
         counter -= 1
+        neighbors_traversed += 1
+
     return True
 
 def generate_kmers(read, kmer_length, kmer_spectrum):

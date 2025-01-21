@@ -10,13 +10,12 @@ class OneSidedTests(unittest.TestCase):
     def test_one_sided_core(self):
         MAX_LEN = 300
         spectrum = []
-        kmer_length = 13
-        local_read = random.randint(1, 4, 100, dtype='uint8')
-
+        kmer_length = 5
+        #local_read = random.randint(1, 4, 100, dtype='uint8')
+        local_read = [4, 2, 1, 2, 4, 1, 2, 3, 4, 2, 1, 5, 2, 3, 4, 4, 1, 2, 3, 4]
         #array used to store base alternative and its corresponding kmer count
         alternatives = np.zeros((4, 2), dtype="uint32")
         num_kmers  = len(local_read) - (kmer_length - 1)
-
         #array that keep tracks of corrections made for every kmer
         correction_tracker = np.zeros(MAX_LEN, dtype="uint8")
         bases = np.zeros(4, dtype="uint8") 
@@ -34,11 +33,13 @@ class OneSidedTests(unittest.TestCase):
 
 
         generate_kmers(local_read, kmer_length, spectrum)
-
+        spectrum.append(23422)
+        print(spectrum)
+        local_read[10] = 3
         #modify random bases in the local read
-        for _ in range(10):
-            random_idx = random.randint(48, 70)
-            local_read[random_idx] = random.randint(1,4)
+        # for _ in range(10):
+        #     random_idx = random.randint(48, 70)
+        #     local_read[random_idx] = random.randint(1,4)
 
         regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
 
@@ -67,7 +68,7 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward right for idx: {region_end} is not successful")
+                        print(f"Correction toward right for idx: {region_end + 1} is not successful")
                         break
 
                     # extend the portion of region end for successful correction
@@ -95,7 +96,7 @@ class OneSidedTests(unittest.TestCase):
                         end - start,
                     ):
                         # fails to correct this region and on this orientation
-                        print(f"Correction toward right for idx: {region_end} is not successful ")
+                        print(f"Correction toward right for idx: {region_end + 1} is not successful ")
                         break
 
                     # extend the portion of region end for successful correction
@@ -122,7 +123,7 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward left for idx: {region_start} is not successful ")
+                        print(f"Correction toward left for idx: {region_start - 1} is not successful ")
                         break
                     else:
                         print(f"Correction in index {region_start - 1} orientation going left is succesful")
@@ -148,7 +149,7 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward left for idx: {region_start} is not successful ")
+                        print(f"Correction toward left for idx: {region_start - 1} is not successful ")
                         break
                     else:
                         print(f"Correction in index {region_start - 1} orientation going left is successful")
