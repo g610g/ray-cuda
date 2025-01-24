@@ -260,7 +260,43 @@ def count_error_reads(solids_batch, len):
 
 
 @cuda.jit(device=True)
-def lookahead_validation(
+def lookahead_predeccessor(
+    kmer_length,
+    local_read,
+    kmer_spectrum,
+    modified_base_idx,
+    alternative_base,
+    neighbors_count,
+):
+    available_neighbors = min(
+        kmer_length, modified_base_idx, len(local_read) - modified_base_idx
+    )
+    neighbors_traversed = 0
+
+    # starting index for modified base within preceeding kmer
+    counter = 1
+
+    # when modified base idx is zero, it means no available neighbors
+    if modified_base_idx <= 0 or available_neighbors <= 0:
+        return True
+
+    # start at the preceeding kmer where modified base index is 1
+    for idx in range(modified_base_idx - 1, -1, -1):
+        if neighbors_traversed >= neighbors_count:
+            break
+        alternative_kmer = local_read[idx : idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+        counter += 1
+        neighbors_traversed += 1
+
+    return True
+
+
+@cuda.jit(device=True)
+def lookahead_successor(
     kmer_length,
     local_read,
     kmer_spectrum,
@@ -268,63 +304,36 @@ def lookahead_validation(
     alternative_base,
     neighbors_max_count,
 ):
-    # this is for base that has kmers that covers < neighbors_max_count
-    if modified_base_idx < neighbors_max_count:
-        num_possible_neighbors = modified_base_idx + 1
-        counter = modified_base_idx
-        min_idx = 0
-        for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
-            alternative_kmer[counter] = alternative_base
 
-            transformed_alternative_kmer = transform_to_key(
-                alternative_kmer, kmer_length
-            )
-            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-                return False
-            min_idx += 1
-            counter -= 1
-        return True
-    # for bases that are modified outside the "easy range"
-    if modified_base_idx >= len(local_read) - kmer_length:
-        num_possible_neighbors = (len(local_read) - 1) - modified_base_idx
+    # check if something is wrong right here
+    available_neighbors = min(
+        modified_base_idx, kmer_length, len(local_read) - modified_base_idx
+    )
 
-        min_idx = modified_base_idx - (kmer_length - 1)
-        max_idx = modified_base_idx
-        counter = kmer_length - 1
-        for _ in range(num_possible_neighbors):
-            alternative_kmer = local_read[min_idx : min_idx + kmer_length]
-            alternative_kmer[counter] = alternative_base
-            transformed_alternative_kmer = transform_to_key(
-                alternative_kmer, kmer_length
-            )
-            if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-                return False
-            min_idx += 1
-            counter -= 1
-
+    # if no neighbors
+    if modified_base_idx > len(local_read) - kmer_length or available_neighbors <= 0:
         return True
 
-    if modified_base_idx < (kmer_length - 1):
-        min_idx = 0
-        max_idx = kmer_length
-        counter = modified_base_idx
-    else:
-        # this is the modified base idx that are within the range of "easy range"
-        min_idx = modified_base_idx - (kmer_length - 1)
-        max_idx = modified_base_idx
-        counter = kmer_length - 1
+    # start index is after forward kmer. (That's why -2)
+    # I should calculate the number of neighbors available to check and the stride of neighbors to check
+    start_idx = modified_base_idx - (kmer_length - 2)
 
-    for _idx in range(neighbors_max_count):
-        if min_idx > max_idx:
-            return False
-        alternative_kmer = local_read[min_idx : min_idx + kmer_length]
+    # calculated number of neighbors
+    max_end_idx = modified_base_idx
+    counter = kmer_length - 2
+    neighbors_traversed = 0
+
+    for idx in range(start_idx, max_end_idx + 1):
+        # I might try to limit the max neighbors to be traversed
+        if neighbors_traversed >= neighbors_max_count:
+            break
+
+        alternative_kmer = local_read[idx : idx + kmer_length]
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
-        min_idx += 1
         counter -= 1
+        neighbors_traversed += 1
 
     return True
-    # returned True meaning the alternative base which sequencing error occurs is (valid)?

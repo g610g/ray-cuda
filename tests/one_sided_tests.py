@@ -3,51 +3,65 @@ import numpy as np
 from numpy import random
 from numpy.testing import assert_array_equal
 from test_modules import identify_trusted_regions, generate_kmers
-from test_correction_modules import correct_read_one_sided_right,correct_read_one_sided_left
+from test_correction_modules import (
+    correct_read_one_sided_right,
+    correct_read_one_sided_left,
+)
 
 
 class OneSidedTests(unittest.TestCase):
     def test_one_sided_core(self):
         MAX_LEN = 300
         spectrum = []
-        kmer_length = 5
-        #local_read = random.randint(1, 4, 100, dtype='uint8')
+        kmer_length = 13
+        # local_read = random.randint(1, 4, 100, dtype="uint8")
         local_read = [4, 2, 1, 2, 4, 1, 2, 3, 4, 2, 1, 5, 2, 3, 4, 4, 1, 2, 3, 4]
-        #array used to store base alternative and its corresponding kmer count
+        # array used to store base alternative and its corresponding kmer count
         alternatives = np.zeros((4, 2), dtype="uint32")
-        num_kmers  = len(local_read) - (kmer_length - 1)
-        #array that keep tracks of corrections made for every kmer
+        local_read_len = len(local_read)
+        num_kmers = len(local_read) - (kmer_length - 1)
+        # array that keep tracks of corrections made for every kmer
         correction_tracker = np.zeros(MAX_LEN, dtype="uint8")
-        bases = np.zeros(4, dtype="uint8") 
+        bases = np.zeros(4, dtype="uint8")
         start, end = 0, len(local_read)
         region_indices = np.zeros((10, 2), dtype="int8")
         solids = np.zeros(MAX_LEN, dtype="int8")
 
-        #seeding solids with -1s
+        print(local_read)
+        # seeding solids with -1s
         for idx in range(len(local_read)):
             solids[idx] = -1
 
-        #seeding bases
+        # seeding bases
         for idx in range(4):
             bases[idx] = idx + 1
 
-
         generate_kmers(local_read, kmer_length, spectrum)
-        spectrum.append(23422)
+        spectrum.append(32124)
+        spectrum.append(11241)
         print(spectrum)
-        local_read[10] = 3
-        #modify random bases in the local read
+        local_read[0] = 1
+        local_read[1] = 3
+        # modify random bases in the local read
         # for _ in range(10):
-        #     random_idx = random.randint(48, 70)
-        #     local_read[random_idx] = random.randint(1,4)
+        #     random_idx = random.randint(0, local_read_len)
+        #     local_read[random_idx] = random.randint(1, 4)
 
-        regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+        regions_count = identify_trusted_regions(
+            0,
+            len(local_read),
+            spectrum,
+            local_read,
+            kmer_length,
+            region_indices,
+            solids,
+        )
 
         print(solids)
         print(region_indices)
         if regions_count == 0:
-                return
-            # no unit tests for this part yet
+            return
+        # no unit tests for this part yet
         for region in range(regions_count):
             # going towards right of the region
 
@@ -68,12 +82,16 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward right for idx: {region_end + 1} is not successful")
+                        print(
+                            f"Correction toward right for idx: {region_end + 1} is not successful"
+                        )
                         break
 
                     # extend the portion of region end for successful correction
                     else:
-                        print(f"Correction in index {region_end + 1} orientation going right is succesful")
+                        print(
+                            f"Correction in index {region_end + 1} orientation going right is succesful"
+                        )
                         region_end += 1
                         region_indices[region][1] = region_end
 
@@ -96,12 +114,16 @@ class OneSidedTests(unittest.TestCase):
                         end - start,
                     ):
                         # fails to correct this region and on this orientation
-                        print(f"Correction toward right for idx: {region_end + 1} is not successful ")
+                        print(
+                            f"Correction toward right for idx: {region_end + 1} is not successful "
+                        )
                         break
 
                     # extend the portion of region end for successful correction
                     else:
-                        print(f"Correction in index {region_end + 1} orientation going right is succesful")
+                        print(
+                            f"Correction in index {region_end + 1} orientation going right is succesful"
+                        )
                         region_end += 1
                         region_indices[region][1] = region_end
 
@@ -123,10 +145,14 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward left for idx: {region_start - 1} is not successful ")
+                        print(
+                            f"Correction toward left for idx: {region_start - 1} is not successful "
+                        )
                         break
                     else:
-                        print(f"Correction in index {region_start - 1} orientation going left is succesful")
+                        print(
+                            f"Correction in index {region_start - 1} orientation going left is succesful"
+                        )
                         region_start -= 1
                         region_indices[region][0] = region_start
 
@@ -149,36 +175,51 @@ class OneSidedTests(unittest.TestCase):
                         num_kmers - 1,
                         end - start,
                     ):
-                        print(f"Correction toward left for idx: {region_start - 1} is not successful ")
+                        print(
+                            f"Correction toward left for idx: {region_start - 1} is not successful "
+                        )
                         break
                     else:
-                        print(f"Correction in index {region_start - 1} orientation going left is successful")
+                        print(
+                            f"Correction in index {region_start - 1} orientation going left is successful"
+                        )
                         region_start -= 1
                         region_indices[region][0] = region_start
 
-
-        #reinitialize solids array
+        # reinitialize solids array
         for idx in range(len(local_read)):
             solids[idx] = -1
 
-        regions_count = identify_trusted_regions(0, len(local_read), spectrum, local_read, kmer_length, region_indices, solids)
+        regions_count = identify_trusted_regions(
+            0,
+            len(local_read),
+            spectrum,
+            local_read,
+            kmer_length,
+            region_indices,
+            solids,
+        )
 
         print("Result after correction")
 
         print(solids)
-        print(region_indices)
+        print(local_read)
+
     def identify_trusted_regions(self, solids, kmer_len):
         current_indices_idx = 0
         base_count = 0
         region_start = 0
         region_end = 0
-        region_indices = np.zeros((10, 2), dtype='uint8')
-        
+        region_indices = np.zeros((10, 2), dtype="uint8")
+
         for idx in range(len(solids)):
 
             if base_count >= kmer_len and solids[idx] == -1:
 
-                region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end 
+                (
+                    region_indices[current_indices_idx][0],
+                    region_indices[current_indices_idx][1],
+                ) = (region_start, region_end)
                 region_start = idx + 1
                 region_end = idx + 1
                 current_indices_idx += 1
@@ -195,66 +236,75 @@ class OneSidedTests(unittest.TestCase):
 
         if base_count >= kmer_len:
 
-            region_indices[current_indices_idx][0], region_indices[current_indices_idx][1] = region_start, region_end
+            (
+                region_indices[current_indices_idx][0],
+                region_indices[current_indices_idx][1],
+            ) = (region_start, region_end)
             current_indices_idx += 1
 
         return [current_indices_idx, region_indices]
+
     def test_correction_calls(self):
         corrections_count = 0
-        solids = [-1,1,1,1,-1,1,1,1,1,1,-1,-1,-1,-1,1,1,1]
+        solids = [-1, 1, 1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, -1, 1, 1, 1]
         [regions_count, region_indices] = self.identify_trusted_regions(solids, 3)
         for region in range(regions_count):
-            #going towards right of the region 
-            #there is no next region
+            # going towards right of the region
+            # there is no next region
             if region == (regions_count - 1):
                 region_end = region_indices[region][1]
 
-                #while we are not at the end base of the read
+                # while we are not at the end base of the read
                 while region_end != (len(solids) - 1):
                     region_end += 1
                     region_indices[region][1] = region_end
                     corrections_count += 1
-            #there is a next region
+            # there is a next region
             if region != (regions_count - 1):
                 region_end = region_indices[region][1]
-                next_region_start = region_indices[region + 1][0] 
+                next_region_start = region_indices[region + 1][0]
 
-                #the loop will not stop until it does not find another region
+                # the loop will not stop until it does not find another region
                 while region_end != (next_region_start - 1):
-                   region_end += 1
-                   region_indices[region][1] = region_end
-                   corrections_count += 1
+                    region_end += 1
+                    region_indices[region][1] = region_end
+                    corrections_count += 1
 
-            #going towards left of the region
+            # going towards left of the region
 
-            #we are the leftmost region
+            # we are the leftmost region
             if region - 1 == -1:
                 region_start = region_indices[region][0]
 
-                #while we are not at the first base of the read
+                # while we are not at the first base of the read
                 while region_start != 0:
 
                     region_start -= 1
                     region_indices[region][0] = region_start
                     corrections_count += 1
-            #there is another region in the left side of this region 
+            # there is another region in the left side of this region
             if region - 1 != -1:
-                region_start, prev_region_end = region_indices[region][0], region_indices[region - 1][1]
+                region_start, prev_region_end = (
+                    region_indices[region][0],
+                    region_indices[region - 1][1],
+                )
                 while region_start - 1 != (prev_region_end):
                     region_start -= 1
                     region_indices[region][0] = region_start
                     corrections_count += 1
         self.assertEqual(corrections_count, 6)
-    
+
     def test_kmer_correction_counter_ends(self):
         kmer_len = 3
         reads = np.arange(11)
-        kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype='uint8')
+        kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype="uint8")
         self.mark_kmer_counter(0, kmer_counter_list, kmer_len, 8, len(reads))
 
-        assert_array_equal(np.array([1, 0, 0, 0, 0, 0, 0, 0, 0]),kmer_counter_list) 
+        assert_array_equal(np.array([1, 0, 0, 0, 0, 0, 0, 0, 0]), kmer_counter_list)
 
-    def mark_kmer_counter(self, base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
+    def mark_kmer_counter(
+        self, base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length
+    ):
         if base_idx < (kmer_len - 1):
             for idx in range(0, base_idx + 1):
                 kmer_counter_list[idx] += 1
@@ -278,27 +328,31 @@ class OneSidedTests(unittest.TestCase):
     def transform_to_key(self, ascii_kmer, len):
         multiplier = 1
         key = 0
-        while(len != 0):
-            key += (ascii_kmer[len - 1] * multiplier)
+        while len != 0:
+            key += ascii_kmer[len - 1] * multiplier
             multiplier *= 10
             len -= 1
 
         return key
 
-def transform_to_key( ascii_kmer, len):
+
+def transform_to_key(ascii_kmer, len):
     multiplier = 1
     key = 0
-    while(len != 0):
-        key += (ascii_kmer[len - 1] * multiplier)
+    while len != 0:
+        key += ascii_kmer[len - 1] * multiplier
         multiplier *= 10
         len -= 1
 
     return key
+
+
 def in_spectrum(kmer, spectrum):
     if kmer in spectrum:
         return True
 
     return False
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

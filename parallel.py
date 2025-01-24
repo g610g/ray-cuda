@@ -98,17 +98,16 @@ def check_corrections(kmers_tracker):
 def remote_core_correction(
     kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter
 ):
-    cuda.profile_start()
-    start = cuda.event()
-    end = cuda.event()
-    start.record()
-    print(kmer_spectrum.shape[0])
+    # cuda.profile_start()
+    # start = cuda.event()
+    # end = cuda.event()
+    # start.record()
+
     # transffering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     # dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
-    lookahead_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype="uint16"))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     kmers_tracker = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="uint8"))
@@ -130,11 +129,6 @@ def remote_core_correction(
         kmer_len,
     )
 
-    # calculates the solidity of kmer after two sided correction
-    calculate_reads_solidity[bpg, tbp](
-        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
-    )
-
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tbp](
         dev_kmer_spectrum,
@@ -145,30 +139,22 @@ def remote_core_correction(
         kmers_tracker,
     )
 
-    end.record()
-    end.synchronize()
-    transfer_time = cuda.event_elapsed_time(start, end)
-    print(f"execution time of the kernel:  {transfer_time} ms")
+    # calculates the solidity of kmer after two sided correction
+    calculate_reads_solidity[bpg, tbp](
+        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
+    )
+    # end.record()
+    # end.synchronize()
+    # transfer_time = cuda.event_elapsed_time(start, end)
+    # print(f"execution time of the kernel:  {transfer_time} ms")
 
-    cuda.profile_stop()
+    # cuda.profile_stop()
     return [
         dev_solids.copy_to_host(),
         dev_solids_after.copy_to_host(),
         dev_reads_1d.copy_to_host(),
         kmers_tracker.copy_to_host(),
     ]
-
-
-# returns then number of error bases
-# @ray.remote(num_cpus=1)
-# def count_error_reads(reads):
-#     count = 0
-#     for read in reads:
-#         for base in read:
-#             if base == -1:
-#                 count += 1
-#                 continue
-#     return count
 
 
 # a kernel that brings back the sequences by using the offsets array

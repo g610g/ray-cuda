@@ -3,7 +3,8 @@ from test_modules import (
     transform_to_key,
     give_kmer_multiplicity,
     mark_kmer_counter,
-    lookahead_validation,
+    lookahead_successor,
+    lookahead_predeccessor,
 )
 
 
@@ -96,9 +97,7 @@ def correct_read_one_sided_right(
         )
         return False
 
-    print(
-        f"{possibility} possiblity."
-    )
+    print(f"{possibility} possiblity.")
     # not sure if correct indexing for reads
     if possibility == 1:
 
@@ -116,7 +115,7 @@ def correct_read_one_sided_right(
         chosen_alternative_base = -1
         chosen_alternative_base_occurence = -1
         for idx in range(possibility):
-            is_potential_correction = lookahead_validation(
+            is_potential_correction = lookahead_successor(
                 kmer_len,
                 local_reads,
                 kmer_spectrum,
@@ -137,7 +136,8 @@ def correct_read_one_sided_right(
                 region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
             return True
-        
+        return False
+
 
 def correct_read_one_sided_left(
     local_reads,
@@ -192,13 +192,13 @@ def correct_read_one_sided_left(
         chosen_alternative_base = -1
         chosen_alternative_base_occurence = -1
         for idx in range(possibility):
-            is_potential_correction = lookahead_validation(
+            is_potential_correction = lookahead_predeccessor(
                 kmer_len,
                 local_reads,
                 kmer_spectrum,
                 region_start - 1,
                 alternatives[idx][0],
-                neighbors_max_count=2,
+                2,
             )
             if is_potential_correction:
                 # find greatest occurence out of all
@@ -214,3 +214,6 @@ def correct_read_one_sided_left(
                 region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
             return True
+
+        # returns false whenever chosen alternative or occurence is -1
+        return False

@@ -14,3 +14,5 @@ print(two)
 # kmer_len = 5
 # reads = np.arange(14)
 # kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype="uint8")
+for idx in range(0, -1, -1):
+    print(idx)

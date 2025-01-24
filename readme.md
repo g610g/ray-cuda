@@ -3,6 +3,9 @@
 - Voting base refinement has no effect at the result, I should examine it properly if my understanding is sakto and generate a proper test cases to validate nga sakto ang akoang code for it.
 - Check the solids array produced after doing two sided correction
 
+- Verify implementation of successor if no bugs (1)
+
+- Create predeccessor implementation (going to the left of the region)
 
 
 
