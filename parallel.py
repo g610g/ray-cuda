@@ -95,13 +95,11 @@ def check_corrections(kmers_tracker):
 
 
 @ray.remote(num_gpus=1, num_cpus=2)
-def remote_core_correction(
-    kmer_spectrum, reads_1d, offsets, kmer_len, two_sided_iter, one_sided_iter
-):
-    # cuda.profile_start()
-    # start = cuda.event()
-    # end = cuda.event()
-    # start.record()
+def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
+    cuda.profile_start()
+    start = cuda.event()
+    end = cuda.event()
+    start.record()
 
     # transffering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
@@ -143,12 +141,12 @@ def remote_core_correction(
     calculate_reads_solidity[bpg, tbp](
         dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
     )
-    # end.record()
-    # end.synchronize()
-    # transfer_time = cuda.event_elapsed_time(start, end)
-    # print(f"execution time of the kernel:  {transfer_time} ms")
+    end.record()
+    end.synchronize()
+    transfer_time = cuda.event_elapsed_time(start, end)
+    print(f"execution time of the kernel:  {transfer_time} ms")
 
-    # cuda.profile_stop()
+    cuda.profile_stop()
     return [
         dev_solids.copy_to_host(),
         dev_solids_after.copy_to_host(),
@@ -305,18 +303,18 @@ if __name__ == "__main__":
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
     [solids_before, solids_after, corrected_reads_array, kmers_tracker] = ray.get(
-        remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len, 2, 2)
+        remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
 
-    print("reads solidity before two sided")
-    ray.get(
-        [
-            count_error_reads.remote(
-                solids_before[batch_idx : batch_idx + batch_size], 100
-            )
-            for batch_idx in range(0, len(solids_before), batch_size)
-        ]
-    )
+    print("reads solidity after two sided")
+    # ray.get(
+    #     [
+    #         count_error_reads.remote(
+    #             solids_before[batch_idx : batch_idx + batch_size], 100
+    #         )
+    #         for batch_idx in range(0, len(solids_before), batch_size)
+    #     ]
+    # )
     # print("Number of kmers that exceeds maximal allowed corrections")
     # ray.get(
     #     [

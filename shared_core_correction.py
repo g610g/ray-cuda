@@ -6,6 +6,7 @@ from shared_helpers import (
     lookahead_successor,
     lookahead_predeccessor,
     mark_kmer_counter,
+    predeccessor_revised,
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
 from voting import apply_vm_result, invoke_voting
@@ -157,15 +158,16 @@ def one_sided_kernel(
         max_correction = 4
 
         bases = cuda.local.array(5, dtype="uint8")
-        for i in range(5):
+
+        # seeding bases 1 to 4
+        for i in range(4):
             bases[i] = i + 1
 
-        # we try to transfer the reads assigned for this thread into its private memory for memory access issues
+        # transfer global memory store reads to local thread memory read
         for idx in range(end - start):
             local_read[idx] = reads[idx + start]
             original_read[idx] = reads[idx + start]
 
-        # run one sided up to maximal allowable number of corrections
         for _ in range(max_correction):
             for i in range(end - start):
                 solids[i] = -1
@@ -174,19 +176,17 @@ def one_sided_kernel(
             for i in range(end - start):
                 corrected_solids[i] = -1
 
+            # identifies trusted regions in this read
             regions_count = identify_trusted_regions(
                 start, end, kmer_spectrum, local_read, kmer_len, region_indices, solids
             )
 
-            # copy_solids(threadIdx, solids, solids_before)
-
-            # fails to correct the read does not have a trusted region (how about regions that has no error?)
+            # zero regions count means no trusted region in this read
             if regions_count == 0:
                 return
 
-            # no unit tests for this part yet
             for region in range(regions_count):
-                # going towards right of the region
+                # 1. goes toward right orientation
 
                 # there is no next region
                 if region == (regions_count - 1):
@@ -290,30 +290,29 @@ def one_sided_kernel(
                             region_indices[region][0] = region_start
 
             # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
-            for idx in range(start, end - (kmer_len - 1)):
-                curr_kmer = transform_to_key(local_read[idx : idx + kmer_len], kmer_len)
-
-                # invoke voting if the kmer is not in spectrum
-                if not in_spectrum(kmer_spectrum, curr_kmer):
-                    invoke_voting(
-                        voting_matrix,
-                        kmer_spectrum,
-                        bases,
-                        kmer_len,
-                        idx,
-                        local_read,
-                        start,
-                    )
-
-            # apply the result of the vm into the reads
-            apply_vm_result(voting_matrix, local_read, start, end)
+            # for idx in range(start, end - (kmer_len - 1)):
+            #     curr_kmer = transform_to_key(local_read[idx : idx + kmer_len], kmer_len)
+            #
+            #     # invoke voting if the kmer is not in spectrum
+            #     if not in_spectrum(kmer_spectrum, curr_kmer):
+            #         invoke_voting(
+            #             voting_matrix,
+            #             kmer_spectrum,
+            #             bases,
+            #             kmer_len,
+            #             idx,
+            #             local_read,
+            #             start,
+            #         )
+            # # apply the result of the vm into the reads
+            # apply_vm_result(voting_matrix, local_read, start, end)
         # endfor
 
-        # checking if there are kmers that has been corrected more than once
+        # checking if there are kmers that has been corrected more than once (used for debugging)
         for idx in range(num_kmers):
             kmers_tracker[threadIdx][idx] = correction_tracker[idx]
 
-        # after the correction, check the tracker if any kmer has number of corrections greater than max corrections
+        # reverts kmers that exceeds maximum allowable corrections (default=4)
 
         check_tracker(
             num_kmers,
@@ -324,6 +323,7 @@ def one_sided_kernel(
             kmer_len,
         )
 
+        # copies back corrected local read into global memory stored reads
         for idx in range(end - start):
             reads[idx + start] = local_read[idx]
 
@@ -407,7 +407,7 @@ def correct_read_one_sided_right(
 # for orientation going to the left of the read
 @cuda.jit(device=True)
 def correct_read_one_sided_left(
-    local_reads,
+    local_read,
     region_start,
     kmer_spectrum,
     kmer_len,
@@ -421,8 +421,8 @@ def correct_read_one_sided_left(
     possibility = 0
     alternative = -1
 
-    backward_kmer = local_reads[region_start - 1 : region_start + (kmer_len - 1)]
-
+    target_pos = region_start - 1
+    backward_kmer = local_read[target_pos : target_pos + kmer_len]
     # If end kmer of trusted region is at the spectrum and when sliding the window, the result kmer is not trusted, then we assume that the end base of that kmer is the sequencing error
     for alternative_base in bases:
         backward_kmer[0] = alternative_base
@@ -445,39 +445,33 @@ def correct_read_one_sided_left(
     # not sure if correct indexing for reads
     if possibility == 1:
 
-        local_reads[region_start - 1] = alternative
-        mark_kmer_counter(
-            region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        local_read[target_pos] = alternative
+        mark_kmer_counter(target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length)
         return True
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
-
         choosen_alternative_base = -1
         choosen_alternative_base_occurence = -1
+
         for idx in range(possibility):
-            is_potential_correction = lookahead_predeccessor(
-                kmer_len,
-                local_reads,
-                kmer_spectrum,
-                region_start - 1,
-                alternatives[idx][0],
-                2,
-            )
-            if is_potential_correction:
+            # is_potential_correction = predeccessor_revised(
+            #     kmer_len,
+            #     local_read,
+            #     kmer_spectrum,
+            #     target_pos - 1,
+            #     alternatives[idx][0],
+            #     2,
+            # )
+            if True:
                 if alternatives[idx][1] > choosen_alternative_base_occurence:
                     choosen_alternative_base = alternatives[idx][0]
                     choosen_alternative_base_occurence = alternatives[idx][1]
 
-            if (
-                choosen_alternative_base_occurence != -1
-                and choosen_alternative_base != -1
-            ):
-                local_reads[region_start - 1] = choosen_alternative_base
-
-                mark_kmer_counter(
-                    region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-                )
-                return True
+        if choosen_alternative_base_occurence != -1 and choosen_alternative_base != -1:
+            local_read[target_pos] = choosen_alternative_base
+            mark_kmer_counter(
+                target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
+            )
+            return True
         return False

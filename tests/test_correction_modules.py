@@ -1,5 +1,6 @@
 from test_modules import (
     in_spectrum,
+    predeccessor_revised,
     transform_to_key,
     give_kmer_multiplicity,
     mark_kmer_counter,
@@ -152,8 +153,9 @@ def correct_read_one_sided_left(
 ):
     possibility = 0
     alternative = -1
+    target_pos = region_start - 1
 
-    backward_kmer = local_reads[region_start - 1 : region_start + (kmer_len - 1)]
+    backward_kmer = local_reads[target_pos : target_pos + kmer_len]
 
     # find alternative  base
     for alternative_base in bases:
@@ -180,25 +182,25 @@ def correct_read_one_sided_left(
     # not sure if correct indexing for reads
     if possibility == 1:
 
-        local_reads[region_start - 1] = alternative
-        mark_kmer_counter(
-            region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        local_reads[target_pos] = alternative
+        mark_kmer_counter(target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length)
         return True
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
-        max = 0
         chosen_alternative_base = -1
         chosen_alternative_base_occurence = -1
         for idx in range(possibility):
-            is_potential_correction = lookahead_predeccessor(
+            is_potential_correction = predeccessor_revised(
                 kmer_len,
                 local_reads,
                 kmer_spectrum,
-                region_start - 1,
+                target_pos - 1,
                 alternatives[idx][0],
                 2,
+            )
+            print(
+                f"is_potential_correction from predeccessor {is_potential_correction}"
             )
             if is_potential_correction:
                 # find greatest occurence out of all
@@ -207,11 +209,11 @@ def correct_read_one_sided_left(
                     chosen_alternative_base_occurence = alternatives[idx][1]
 
         if chosen_alternative_base != -1 and chosen_alternative_base_occurence != -1:
-            local_reads[region_start - 1] = alternatives[max][0]
+            local_reads[target_pos] = chosen_alternative_base
 
             # increase the number correction for this kmer
             mark_kmer_counter(
-                region_start - 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
+                target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
             return True
 

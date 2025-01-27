@@ -2,7 +2,11 @@ import unittest
 import numpy as np
 from numpy import random
 from numpy.testing import assert_array_equal
-from test_modules import identify_trusted_regions, generate_kmers
+from test_modules import (
+    count_occurence,
+    identify_trusted_regions,
+    generate_kmers,
+)
 from test_correction_modules import (
     correct_read_one_sided_right,
     correct_read_one_sided_left,
@@ -14,8 +18,45 @@ class OneSidedTests(unittest.TestCase):
         MAX_LEN = 300
         spectrum = []
         kmer_length = 13
+        local_read = [
+            4,
+            2,
+            1,
+            4,
+            1,
+            1,
+            2,
+            5,
+            3,
+            2,
+            3,
+            1,
+            2,
+            4,
+            3,
+            1,
+            2,
+            2,
+            4,
+            3,
+            2,
+            1,
+            2,
+            3,
+            4,
+            5,
+            4,
+            2,
+        ]
         # local_read = random.randint(1, 4, 100, dtype="uint8")
-        local_read = [4, 2, 1, 2, 4, 1, 2, 3, 4, 2, 1, 5, 2, 3, 4, 4, 1, 2, 3, 4]
+        original_read = local_read.copy()
+
+        # generates dummy kmers
+        # for idx in range(10):
+        #     dummy_read = random.randint(1, 4, 100, dtype="uint8")
+        #     generate_kmers(dummy_read, kmer_length, spectrum)
+        generate_kmers(local_read, kmer_length, spectrum)
+        spectrum = count_occurence(spectrum)
         # array used to store base alternative and its corresponding kmer count
         alternatives = np.zeros((4, 2), dtype="uint32")
         local_read_len = len(local_read)
@@ -27,164 +68,171 @@ class OneSidedTests(unittest.TestCase):
         region_indices = np.zeros((10, 2), dtype="int8")
         solids = np.zeros(MAX_LEN, dtype="int8")
 
-        print(local_read)
-        # seeding solids with -1s
-        for idx in range(len(local_read)):
-            solids[idx] = -1
-
         # seeding bases
         for idx in range(4):
             bases[idx] = idx + 1
-
-        generate_kmers(local_read, kmer_length, spectrum)
-        spectrum.append(32124)
-        spectrum.append(11241)
-        print(spectrum)
-        local_read[0] = 1
+        print(local_read)
+        print(local_read[local_read_len // 2 : local_read_len // 2 + kmer_length])
+        dummy = local_read[local_read_len // 2 : local_read_len // 2 + kmer_length]
+        dummy[0] = 2
+        spectrum.append([transform_to_key(dummy, kmer_length), 1])
+        local_read[local_read_len // 2] = 1
         local_read[1] = 3
         # modify random bases in the local read
         # for _ in range(10):
-        #     random_idx = random.randint(0, local_read_len)
+        #     random_idx = random.randint(0, 20)
+        #     local_read[random_idx] = random.randint(1, 4)
+        #
+        # for _ in range(10):
+        #     random_idx = random.randint(80, local_read_len)
         #     local_read[random_idx] = random.randint(1, 4)
 
-        regions_count = identify_trusted_regions(
-            0,
-            len(local_read),
-            spectrum,
-            local_read,
-            kmer_length,
-            region_indices,
-            solids,
-        )
+        # run one sided for a number of time
+        for _ in range(2):
+            # seeding solids with -1s
+            for idx in range(len(local_read)):
+                solids[idx] = -1
 
-        print(solids)
-        print(region_indices)
-        if regions_count == 0:
-            return
-        # no unit tests for this part yet
-        for region in range(regions_count):
-            # going towards right of the region
+            regions_count = identify_trusted_regions(
+                0,
+                len(local_read),
+                spectrum,
+                local_read,
+                kmer_length,
+                region_indices,
+                solids,
+            )
+            print(solids)
+            print(region_indices)
+            if regions_count == 0:
+                return
 
-            # there is no next region
-            if region == (regions_count - 1):
-                region_end = region_indices[region][1]
+            # no unit tests for this part yet
+            for region in range(regions_count):
+                # going towards right of the region
 
-                # while we are not at the end base of the read
-                while region_end != (end - start) - 1:
-                    if not correct_read_one_sided_right(
-                        local_read,
-                        region_end,
-                        spectrum,
-                        kmer_length,
-                        bases,
-                        alternatives,
-                        correction_tracker,
-                        num_kmers - 1,
-                        end - start,
-                    ):
-                        print(
-                            f"Correction toward right for idx: {region_end + 1} is not successful"
-                        )
-                        break
+                # there is no next region
+                if region == (regions_count - 1):
+                    region_end = region_indices[region][1]
 
-                    # extend the portion of region end for successful correction
-                    else:
-                        print(
-                            f"Correction in index {region_end + 1} orientation going right is succesful"
-                        )
-                        region_end += 1
-                        region_indices[region][1] = region_end
+                    # while we are not at the end base of the read
+                    while region_end != (end - start) - 1:
+                        if not correct_read_one_sided_right(
+                            local_read,
+                            region_end,
+                            spectrum,
+                            kmer_length,
+                            bases,
+                            alternatives,
+                            correction_tracker,
+                            num_kmers - 1,
+                            end - start,
+                        ):
+                            print(
+                                f"Correction toward right for idx: {region_end + 1} is not successful"
+                            )
+                            break
 
-            # there is a next region
-            if region != (regions_count - 1):
-                region_end = region_indices[region][1]
-                next_region_start = region_indices[region + 1][0]
+                        # extend the portion of region end for successful correction
+                        else:
+                            print(
+                                f"Correction in index {region_end + 1} orientation going right is successful"
+                            )
+                            region_end += 1
+                            region_indices[region][1] = region_end
 
-                # the loop will not stop until it does not find another region
-                while region_end != (next_region_start - 1):
-                    if not correct_read_one_sided_right(
-                        local_read,
-                        region_end,
-                        spectrum,
-                        kmer_length,
-                        bases,
-                        alternatives,
-                        correction_tracker,
-                        num_kmers - 1,
-                        end - start,
-                    ):
-                        # fails to correct this region and on this orientation
-                        print(
-                            f"Correction toward right for idx: {region_end + 1} is not successful "
-                        )
-                        break
+                # there is a next region
+                if region != (regions_count - 1):
+                    region_end = region_indices[region][1]
+                    next_region_start = region_indices[region + 1][0]
 
-                    # extend the portion of region end for successful correction
-                    else:
-                        print(
-                            f"Correction in index {region_end + 1} orientation going right is succesful"
-                        )
-                        region_end += 1
-                        region_indices[region][1] = region_end
+                    # the loop will not stop until it does not find another region
+                    while region_end != (next_region_start - 1):
+                        if not correct_read_one_sided_right(
+                            local_read,
+                            region_end,
+                            spectrum,
+                            kmer_length,
+                            bases,
+                            alternatives,
+                            correction_tracker,
+                            num_kmers - 1,
+                            end - start,
+                        ):
+                            # fails to correct this region and on this orientation
+                            print(
+                                f"Correction toward right for idx: {region_end + 1} is not successful "
+                            )
+                            break
 
-            # going towards left of the region
-            # we are the leftmost region
-            if region - 1 == -1:
-                region_start = region_indices[region][0]
+                        # extend the portion of region end for successful correction
+                        else:
+                            print(
+                                f"Correction in index {region_end + 1} orientation going right is successful"
+                            )
+                            region_end += 1
+                            region_indices[region][1] = region_end
 
-                # while we are not at the first base of the read
-                while region_start != 0:
-                    if not correct_read_one_sided_left(
-                        local_read,
-                        region_start,
-                        spectrum,
-                        kmer_length,
-                        bases,
-                        alternatives,
-                        correction_tracker,
-                        num_kmers - 1,
-                        end - start,
-                    ):
-                        print(
-                            f"Correction toward left for idx: {region_start - 1} is not successful "
-                        )
-                        break
-                    else:
-                        print(
-                            f"Correction in index {region_start - 1} orientation going left is succesful"
-                        )
-                        region_start -= 1
-                        region_indices[region][0] = region_start
+                # going towards left of the region
+                # we are the leftmost region
+                if region - 1 == -1:
+                    region_start = region_indices[region][0]
 
-            # there is another region in the left side of this region
-            if region - 1 != -1:
-                region_start, prev_region_end = (
-                    region_indices[region][0],
-                    region_indices[region - 1][1],
-                )
-                while region_start - 1 != (prev_region_end):
+                    # while we are not at the first base of the read
+                    while region_start != 0:
+                        if not correct_read_one_sided_left(
+                            local_read,
+                            region_start,
+                            spectrum,
+                            kmer_length,
+                            bases,
+                            alternatives,
+                            correction_tracker,
+                            num_kmers - 1,
+                            end - start,
+                        ):
+                            print(
+                                f"Correction toward left for idx: {region_start - 1} is not successful "
+                            )
+                            break
+                        else:
+                            print(
+                                f"Correction in index {region_start - 1} orientation going left is successful"
+                            )
+                            region_start -= 1
+                            region_indices[region][0] = region_start
 
-                    if not correct_read_one_sided_left(
-                        local_read,
-                        region_start,
-                        spectrum,
-                        kmer_length,
-                        bases,
-                        alternatives,
-                        correction_tracker,
-                        num_kmers - 1,
-                        end - start,
-                    ):
-                        print(
-                            f"Correction toward left for idx: {region_start - 1} is not successful "
-                        )
-                        break
-                    else:
-                        print(
-                            f"Correction in index {region_start - 1} orientation going left is successful"
-                        )
-                        region_start -= 1
-                        region_indices[region][0] = region_start
+                # there is another region in the left side of this region
+                if region - 1 != -1:
+                    region_start, prev_region_end = (
+                        region_indices[region][0],
+                        region_indices[region - 1][1],
+                    )
+                    while region_start - 1 != (prev_region_end):
+
+                        if not correct_read_one_sided_left(
+                            local_read,
+                            region_start,
+                            spectrum,
+                            kmer_length,
+                            bases,
+                            alternatives,
+                            correction_tracker,
+                            num_kmers - 1,
+                            end - start,
+                        ):
+                            print(
+                                f"Correction toward left for idx: {region_start - 1} is not successful "
+                            )
+                            break
+                        else:
+                            print(
+                                f"Correction in index {region_start - 1} orientation going left is successful"
+                            )
+                            region_start -= 1
+                            region_indices[region][0] = region_start
+
+        # endfor
 
         # reinitialize solids array
         for idx in range(len(local_read)):
@@ -204,6 +252,7 @@ class OneSidedTests(unittest.TestCase):
 
         print(solids)
         print(local_read)
+        assert_array_equal(original_read, local_read)
 
     def identify_trusted_regions(self, solids, kmer_len):
         current_indices_idx = 0

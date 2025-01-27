@@ -1,6 +1,7 @@
-def in_spectrum(spectrum, kmer):
-    if kmer in spectrum:
-        return True
+def in_spectrum(spectrum, target_kmer):
+    for kmer in spectrum:
+        if target_kmer == kmer[0]:
+            return True
     return False
 
 
@@ -105,6 +106,9 @@ def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_
 
 
 def give_kmer_multiplicity(kmer_spectrum, kmer):
+    if not in_spectrum(kmer_spectrum, kmer):
+        return -1
+
     return 100
 
 
@@ -123,9 +127,12 @@ def lookahead_successor(
     )
 
     # if no neighbors
-    if modified_base_idx > len(local_read) - kmer_length or available_neighbors <= 0:
+    if (
+        modified_base_idx > len(local_read) - kmer_length
+        or modified_base_idx < kmer_length
+    ):
+        print("Something error went wrong")
         return True
-
     # start index is after forward kmer. (That's why -2)
     # I should calculate the number of neighbors available to check and the stride of neighbors to check
     start_idx = modified_base_idx - (kmer_length - 2)
@@ -136,6 +143,7 @@ def lookahead_successor(
     neighbors_traversed = 0
 
     for idx in range(start_idx, max_end_idx + 1):
+
         # I might try to limit the max neighbors to be traversed
         if neighbors_traversed >= neighbors_max_count:
             break
@@ -156,38 +164,73 @@ def lookahead_successor(
     return True
 
 
+def predeccessor_revised(
+    kmer_length,
+    local_read,
+    kmer_spectrum,
+    seq_len,
+    alternative_base,
+    neighbors_count,
+):
+
+    if seq_len <= 0 or seq_len > (len(local_read) - kmer_length):
+        print("Something error went wrong")
+        return True
+
+    counter = 1
+    neighbors_traversed = 0
+
+    for idx in range(seq_len, -1, -1):
+        if neighbors_traversed >= neighbors_count:
+            break
+
+        alternative_kmer = local_read[idx : idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+
+        neighbors_traversed += 1
+        counter += 1
+    return True
+
+
 def lookahead_predeccessor(
     kmer_length,
     local_read,
     kmer_spectrum,
     modified_base_idx,
     alternative_base,
-    neighbors_count=2,
+    neighbors_count,
 ):
-    available_neighbors = min(
-        kmer_length, modified_base_idx, len(local_read) - modified_base_idx
-    )
+    # available_neighbors = min(
+    #     kmer_length, modified_base_idx, len(local_read) - modified_base_idx
+    # )
     neighbors_traversed = 0
 
     # starting index for modified base within preceeding kmer
     counter = 1
 
     # when modified base idx is zero, it means no available neighbors
-    if modified_base_idx <= 0 or available_neighbors <= 0:
+    if modified_base_idx <= 0:
         return True
 
-    # start at the preceeding kmer where modified base index is 1
-    for idx in range(modified_base_idx - 1, -1, -1):
+    idx = modified_base_idx - 1
+    print(f"Within predeccesor with alternative base:{alternative_base}")
+    while idx >= 0:
         if neighbors_traversed >= neighbors_count:
             break
         alternative_kmer = local_read[idx : idx + kmer_length]
+        print(f"Kmer starting from index: {idx} to index: {idx + kmer_length}")
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            print(f"{transformed_alternative_kmer} is not in spectrum")
             return False
+
+        idx -= 1
         counter += 1
         neighbors_traversed += 1
+
     return True
 
 
@@ -196,3 +239,15 @@ def generate_kmers(read, kmer_length, kmer_spectrum):
         kmer_spectrum.append(
             transform_to_key(read[idx : idx + kmer_length], kmer_length)
         )
+
+
+def count_occurence(spectrum):
+    new_spectrum = []
+    for kmer in spectrum:
+        occurence = 0
+        for inner_kmer in spectrum:
+            if kmer == inner_kmer:
+                occurence += 1
+        new_spectrum.append([kmer, occurence])
+
+    return new_spectrum.copy()
