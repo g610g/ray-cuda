@@ -274,7 +274,7 @@ def successor(
     ipos = target_pos - (kmer_length - 2)
     traversed_count = 0
     counter = kmer_length - 2
-    for idx in range(ipos, target_pos):
+    for idx in range(ipos, target_pos + 1):
         if traversed_count >= max_traverse:
             return True
 

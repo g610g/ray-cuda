@@ -154,7 +154,7 @@ def one_sided_kernel(
         voting_matrix = cuda.local.array((4, MAX_LEN), dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
         num_kmers = (end - start) - (kmer_len - 1)
-        max_correction = 2
+        max_correction = 4
 
         bases = cuda.local.array(4, dtype="uint8")
 
@@ -349,7 +349,8 @@ def correct_read_one_sided_right(
     target_pos = region_end + 1
     ipos = target_pos - (kmer_len - 1)
 
-    forward_kmer = local_read[ipos: target_pos]
+    # + 1 inclusive exclusive indexing of python
+    forward_kmer = local_read[ipos: target_pos + 1]
 
     # foreach alternative base
     for alternative_base in bases:
@@ -487,5 +488,3 @@ def correct_read_one_sided_left(
             )
             return True
         return False
-
-    return False
