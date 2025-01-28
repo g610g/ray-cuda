@@ -154,7 +154,7 @@ def one_sided_kernel(
         voting_matrix = cuda.local.array((4, MAX_LEN), dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
         num_kmers = (end - start) - (kmer_len - 1)
-        max_correction = 4
+        max_correction = 2
 
         bases = cuda.local.array(4, dtype="uint8")
 
@@ -191,9 +191,13 @@ def one_sided_kernel(
                 if region == (regions_count - 1):
                 # if region == 0:
                     region_end = region_indices[region][1]
-
+                    corrections_count = 0
+                    last_position = -1
+                    original_bases = local_read[region_end:]
                     # while we are not at the end base of the read
                     while region_end != (end - start) - 1:
+                        target_pos = region_end + 1
+                        #keep track the number of corrections made here
                         if not correct_read_one_sided_right(
                             local_read,
                             region_end,
@@ -208,10 +212,25 @@ def one_sided_kernel(
                             not_corrected_counter[threadIdx] += 1
                             break
 
-                        # extend the portion of region end for successful correction
+                        # extend the portion of region end for successful correction and check the number of corrections done
                         else:
+                            if last_position < 0:
+                                last_position = target_pos
+                            if target_pos - last_position < kmer_len:
+                                corrections_count += 1
+                                #revert back bases from last position to target position
+                                if corrections_count > max_correction:
+                                    for pos in range(last_position, target_pos + 1):
+                                        local_read[pos] = original_bases[last_position + pos]
+                        
+                            #recalculate the last position and reset corrections made
+                            else:
+                                last_position = target_pos
+                                corrections_count = 0
+
+                            #success correction
                             region_end += 1
-                            region_indices[region][1] = region_end
+                            region_indices[region][1] = target_pos
 
                 # there is a next region
                 elif region != (regions_count - 1):
@@ -341,11 +360,14 @@ def correct_read_one_sided_right(
     kmer_tracker,
     max_kmer_idx,
     read_length,
+    num_corrections,
+    max_corrections,
 ):
 
     possibility = 0
     alternative = -1
-
+    last_position = -1
+    corrections_count = 0
     target_pos = region_end + 1
     ipos = target_pos - (kmer_len - 1)
 
@@ -377,10 +399,11 @@ def correct_read_one_sided_right(
     # not sure if correct indexing for reads
     if possibility == 1:
 
-        local_read[region_end + 1] = alternative
-        mark_kmer_counter(
-            target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        local_read[target_pos] = alternative
+        
+        # mark_kmer_counter(
+        #     target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
+        # )
         return True
 
     # we have to iterate the number of alternatives and find the max element
