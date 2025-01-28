@@ -15,14 +15,14 @@ def apply_vm_result(vm, read, start, end):
                 current_base = base + 1
                 max_vote = vm[base][read_position]
         if max_vote != 0 and current_base != -1:
-            read[start + read_position] = current_base
+            read[read_position] = current_base
 
 
 # check for indexing in the code snippet
 @cuda.jit(device=True)
-def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
+def invoke_voting(vm, kmer_spectrum, bases, kmer_len, ipos, read):
 
-    curr_kmer = read[curr_idx : curr_idx + kmer_len]
+    curr_kmer = read[ipos : ipos + kmer_len]
     for idx in range(kmer_len):
         original_base = curr_kmer[idx]
         for base in bases:
@@ -31,8 +31,7 @@ def invoke_voting(vm, kmer_spectrum, bases, kmer_len, curr_idx, read, start):
 
             # add a vote to the corresponding index
             if in_spectrum(kmer_spectrum, trans_curr_kmer):
-                vm[base - 1][(curr_idx - start) + idx] += 1
-
+                vm[base - 1][ipos + idx] += 1
         # revert the base back to its original base
         curr_kmer[idx] = original_base
 

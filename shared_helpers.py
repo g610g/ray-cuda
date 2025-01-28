@@ -176,6 +176,8 @@ def assign_sequence(read_batch, sequence_batch):
         non_zeros_int_read = [x for x in int_read if x != 0]
         read_string = "".join(map(str, non_zeros_int_read))
         ascii_read_string = read_string.translate(translation_table)
+        if len(ascii_read_string) != 100:
+            print(ascii_read_string)
         sequence.seq = Seq.Seq(ascii_read_string)
 
     return sequence_batch
@@ -259,116 +261,7 @@ def count_error_reads(solids_batch, len):
                 break
     print(f"error reads detected: {error_reads}")
 
-
-@cuda.jit(device=True)
-def predeccessor_revised(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    seq_len,
-    alternative_base,
-    neighbors_count,
-):
-
-    if seq_len <= 0:
-        return True
-
-    counter = 1
-    neighbors_traversed = 0
-
-    for idx in range(seq_len, -1, -1):
-        if neighbors_traversed >= neighbors_count:
-            return True
-
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            return False
-
-        neighbors_traversed += 1
-        counter += 1
-    return True
-
-
-# I can implement stride to give stride to chosen predeccessor neighbors
-@cuda.jit(device=True)
-def lookahead_predeccessor(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    modified_base_idx,
-    alternative_base,
-    neighbors_count,
-):
-    neighbors_traversed = 0
-
-    # starting index for modified base within preceeding kmer
-    counter = 1
-
-    # when modified base idx is zero, it means no available neighbors
-    if modified_base_idx <= 0:
-        return True
-
-    idx = modified_base_idx - 1
-    while idx >= 0:
-        if neighbors_traversed >= neighbors_count:
-            break
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            return False
-
-        idx -= 1
-        counter += 1
-        neighbors_traversed += 1
-
-    return True
-
-
-@cuda.jit(device=True)
-def lookahead_successor(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    modified_base_idx,
-    alternative_base,
-    neighbors_max_count,
-):
-
-    # if no neighbors or left bases of modified base is < kmer_length
-    if (
-        modified_base_idx > len(local_read) - kmer_length
-        or modified_base_idx < kmer_length
-    ):
-        return True
-
-    # start index is after forward kmer. (That's why -2)
-    # I should calculate the number of neighbors available to check and the stride of neighbors to check
-    start_idx = modified_base_idx - (kmer_length - 2)
-
-    # calculated number of neighbors
-    max_end_idx = modified_base_idx
-    counter = kmer_length - 2
-    neighbors_traversed = 0
-
-    for idx in range(start_idx, max_end_idx + 1):
-        # I might try to limit the max neighbors to be traversed
-        if neighbors_traversed >= neighbors_max_count:
-            break
-
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            return False
-        counter -= 1
-        neighbors_traversed += 1
-
-    return True
-
-
+#lookahead validation of succeeding kmers
 @cuda.jit(device=True)
 def successor(
     kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
@@ -392,6 +285,32 @@ def successor(
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
         counter -= 1
+        traversed_count += 1
+
+    return True
+
+#lookahead validation of preceeding kmers
+@cuda.jit(device=True)
+def predeccessor(
+    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
+):
+    ipos = target_pos - 1
+    if ipos <= 0:
+        return True
+    counter = 1
+    traversed_count = 0
+    for idx in range(ipos, -1, -1):
+        if traversed_count >= max_traverse:
+            return True
+
+        alternative_kmer = local_read[idx : idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+
+        counter += 1
         traversed_count += 1
 
     return True

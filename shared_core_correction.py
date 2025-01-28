@@ -3,10 +3,9 @@ from shared_helpers import (
     check_tracker,
     identify_solid_bases,
     identify_trusted_regions,
-    lookahead_successor,
-    lookahead_predeccessor,
     mark_kmer_counter,
-    predeccessor_revised,
+    predeccessor,
+    successor,
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
 from voting import apply_vm_result, invoke_voting
@@ -155,9 +154,9 @@ def one_sided_kernel(
         voting_matrix = cuda.local.array((4, MAX_LEN), dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
         num_kmers = (end - start) - (kmer_len - 1)
-        max_correction = 4
+        max_correction = 2
 
-        bases = cuda.local.array(5, dtype="uint8")
+        bases = cuda.local.array(4, dtype="uint8")
 
         # seeding bases 1 to 4
         for i in range(4):
@@ -190,6 +189,7 @@ def one_sided_kernel(
 
                 # there is no next region
                 if region == (regions_count - 1):
+                # if region == 0:
                     region_end = region_indices[region][1]
 
                     # while we are not at the end base of the read
@@ -214,7 +214,7 @@ def one_sided_kernel(
                             region_indices[region][1] = region_end
 
                 # there is a next region
-                if region != (regions_count - 1):
+                elif region != (regions_count - 1):
                     region_end = region_indices[region][1]
                     next_region_start = region_indices[region + 1][0]
 
@@ -240,13 +240,12 @@ def one_sided_kernel(
                             region_end += 1
                             region_indices[region][1] = region_end
 
-                # going towards left of the region
-                # we are the leftmost region
+                # 2. Orientation going to the left
                 if region - 1 == -1:
                     region_start = region_indices[region][0]
 
                     # while we are not at the first base of the read
-                    while region_start != 0:
+                    while region_start > 0:
                         if not correct_read_one_sided_left(
                             local_read,
                             region_start,
@@ -265,12 +264,12 @@ def one_sided_kernel(
                             region_indices[region][0] = region_start
 
                 # there is another region in the left side of this region
-                if region - 1 != -1:
+                elif region - 1 != -1:
                     region_start, prev_region_end = (
                         region_indices[region][0],
                         region_indices[region - 1][1],
                     )
-                    while region_start - 1 != (prev_region_end):
+                    while region_start - 1 > (prev_region_end):
 
                         if not correct_read_one_sided_left(
                             local_read,
@@ -289,23 +288,25 @@ def one_sided_kernel(
                             region_start -= 1
                             region_indices[region][0] = region_start
 
+            voting_end_idx = (end - start)  - kmer_len
+            for idx in range(0, voting_end_idx):
             # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
             # for idx in range(start, end - (kmer_len - 1)):
-            #     curr_kmer = transform_to_key(local_read[idx : idx + kmer_len], kmer_len)
-            #
-            #     # invoke voting if the kmer is not in spectrum
-            #     if not in_spectrum(kmer_spectrum, curr_kmer):
-            #         invoke_voting(
-            #             voting_matrix,
-            #             kmer_spectrum,
-            #             bases,
-            #             kmer_len,
-            #             idx,
-            #             local_read,
-            #             start,
-            #         )
-            # # apply the result of the vm into the reads
-            # apply_vm_result(voting_matrix, local_read, start, end)
+                ascii_curr_kmer = local_read[idx: idx + kmer_len]
+                curr_kmer = transform_to_key(ascii_curr_kmer, kmer_len)
+            
+                # invoke voting if the kmer is not in spectrum
+                if not in_spectrum(kmer_spectrum, curr_kmer):
+                    invoke_voting(
+                        voting_matrix,
+                        kmer_spectrum,
+                        bases,
+                        kmer_len,
+                        idx,
+                        local_read,
+                    )
+            # apply the result of the vm into the reads
+            apply_vm_result(voting_matrix, local_read, start, end)
         # endfor
 
         # checking if there are kmers that has been corrected more than once (used for debugging)
@@ -331,7 +332,7 @@ def one_sided_kernel(
 # for orientation going to the right of the read
 @cuda.jit(device=True)
 def correct_read_one_sided_right(
-    local_reads,
+    local_read,
     region_end,
     kmer_spectrum,
     kmer_len,
@@ -345,10 +346,15 @@ def correct_read_one_sided_right(
     possibility = 0
     alternative = -1
 
-    forward_kmer = local_reads[(region_end - (kmer_len - 1)) + 1 : region_end + 2]
+    target_pos = region_end + 1
+    ipos = target_pos - (kmer_len - 1)
+
+    forward_kmer = local_read[ipos: target_pos]
 
     # foreach alternative base
     for alternative_base in bases:
+        if alternative_base == forward_kmer[-1]:
+            continue
         forward_kmer[-1] = alternative_base
         candidate_kmer = transform_to_key(forward_kmer, kmer_len)
 
@@ -370,33 +376,35 @@ def correct_read_one_sided_right(
     # not sure if correct indexing for reads
     if possibility == 1:
 
-        local_reads[region_end + 1] = alternative
+        local_read[region_end + 1] = alternative
         mark_kmer_counter(
-            region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
+            target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
         )
         return True
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
+       
         choosen_alternative_base = -1
         choosen_alternative_base_occurence = -1
 
         for idx in range(possibility):
-            is_potential_correction = lookahead_successor(
+            is_potential_correction = successor(
                 kmer_len,
-                local_reads,
+                local_read,
                 kmer_spectrum,
-                region_end + 1,
+                target_pos,
                 alternatives[idx][0],
                 2,
             )
             if is_potential_correction:
-                if alternatives[idx][1] > choosen_alternative_base_occurence:
+                if alternatives[idx][1] >= choosen_alternative_base_occurence:
                     choosen_alternative_base = alternatives[idx][0]
                     choosen_alternative_base_occurence = alternatives[idx][1]
+                
 
         if choosen_alternative_base_occurence != -1 and choosen_alternative_base != -1:
-            local_reads[region_end + 1] = choosen_alternative_base
+            local_read[target_pos] = choosen_alternative_base
             mark_kmer_counter(
                 region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
             )
@@ -425,6 +433,8 @@ def correct_read_one_sided_left(
     backward_kmer = local_read[target_pos : target_pos + kmer_len]
     # If end kmer of trusted region is at the spectrum and when sliding the window, the result kmer is not trusted, then we assume that the end base of that kmer is the sequencing error
     for alternative_base in bases:
+        if alternative_base == backward_kmer[0]:
+            continue
         backward_kmer[0] = alternative_base
         candidate_kmer = transform_to_key(backward_kmer, kmer_len)
 
@@ -451,22 +461,24 @@ def correct_read_one_sided_left(
 
     # we have to iterate the number of alternatives and find the max element
     if possibility > 1:
+     
         choosen_alternative_base = -1
         choosen_alternative_base_occurence = -1
 
         for idx in range(possibility):
-            # is_potential_correction = predeccessor_revised(
-            #     kmer_len,
-            #     local_read,
-            #     kmer_spectrum,
-            #     target_pos - 1,
-            #     alternatives[idx][0],
-            #     2,
-            # )
-            if True:
-                if alternatives[idx][1] > choosen_alternative_base_occurence:
+            is_potential_correction = predeccessor(
+                kmer_len,
+                local_read,
+                kmer_spectrum,
+                target_pos,
+                alternatives[idx][0],
+                1,
+            )
+            if is_potential_correction:
+                if alternatives[idx][1] >= choosen_alternative_base_occurence :
                     choosen_alternative_base = alternatives[idx][0]
                     choosen_alternative_base_occurence = alternatives[idx][1]
+                  
 
         if choosen_alternative_base_occurence != -1 and choosen_alternative_base != -1:
             local_read[target_pos] = choosen_alternative_base
@@ -475,3 +487,5 @@ def correct_read_one_sided_left(
             )
             return True
         return False
+
+    return False

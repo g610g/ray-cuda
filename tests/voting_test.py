@@ -12,6 +12,8 @@ from voting_module import apply_vm_result, invoke_voting
 
 
 class VotingTest(unittest.TestCase):
+    def test_voting_indices(self):
+        pass
     def test_voting_refinement(self):
         MAXLEN = 100
         kmer_len = 13

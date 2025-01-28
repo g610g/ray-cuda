@@ -115,9 +115,9 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     bpg = offsets.shape[0] // tbp
 
     # calculates the solidity of kmer before corrections happen
-    calculate_reads_solidity[bpg, tbp](
-        dev_reads_1d, dev_offsets, dev_solids, kmer_len, dev_kmer_spectrum
-    )
+    # calculate_reads_solidity[bpg, tbp](
+    #     dev_reads_1d, dev_offsets, dev_solids, kmer_len, dev_kmer_spectrum
+    # )
 
     # invoking the two sided correction kernel
     two_sided_kernel[bpg, tbp](
@@ -138,9 +138,9 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     )
 
     # calculates the solidity of kmer after two sided correction
-    calculate_reads_solidity[bpg, tbp](
-        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
-    )
+    # calculate_reads_solidity[bpg, tbp](
+    #     dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
+    # )
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
@@ -342,6 +342,8 @@ if __name__ == "__main__":
     print(
         f"time it takes to serialize sequence objects: {put_object_end_time - put_object_starttime}"
     )
+    
+    #assign sequence takes a lot of time
     new_sequences = ray.get(
         [
             assign_sequence.remote(

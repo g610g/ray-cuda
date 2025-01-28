@@ -194,6 +194,30 @@ def predeccessor_revised(
         counter += 1
     return True
 
+def predeccessor(
+    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
+):
+    ipos = target_pos - 1
+    if ipos <= 0:
+        return True
+    counter = 1
+    traversed_count = 0
+    for idx in range(ipos, -1, -1):
+        if traversed_count >= max_traverse:
+            return True
+
+        alternative_kmer = local_read[idx : idx + kmer_length]
+        print(f"start: {idx} end: {idx + kmer_length}")
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+
+        counter += 1
+        traversed_count += 1
+
+    return True
 
 def lookahead_predeccessor(
     kmer_length,
@@ -233,6 +257,32 @@ def lookahead_predeccessor(
 
     return True
 
+
+def successor(
+    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
+):
+    # edge cases
+    if target_pos > len(local_read) - kmer_length:
+        return True
+
+    # ipos represents the starting index for successors kmers
+    ipos = target_pos - (kmer_length - 2)
+    traversed_count = 0
+    counter = kmer_length - 2
+    for idx in range(ipos, target_pos):
+        if traversed_count >= max_traverse:
+            return True
+
+        alternative_kmer = local_read[idx : idx + kmer_length]
+        alternative_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
+
+        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
+            return False
+        counter -= 1
+        traversed_count += 1
+
+    return True
 
 def generate_kmers(read, kmer_length, kmer_spectrum):
     for idx in range(0, len(read) - (kmer_length - 1)):
