@@ -11,14 +11,6 @@
 
 
  
-# FINISHED
-
-- Core implementation of one sided and two sided looks good
-- The two multistages does corrects and mutates the reads
-- Implemented on a single GPU
-- Voting based refinement implementation
-- Solved the problem of long query for kmer spectrum by sorting the kmer spectrum and use binary search for searching
-
 # PROBLEM
 - How to effieciently transform back jagged array into a list of reads
 
@@ -41,3 +33,8 @@
 # TESTING PROBLEM
 - During lookahead validation, bases at each end of the read doesnt have any neighbor
 - Since two sided cannot correct bases that are at the leftmost and rightmost, it fails to correct those erroneous bases. We try to let one sided handle that case. If ang solids array is something like [-1, 1, 1, -1, -1, -1] with a kmer length of 3, ang mga last 3 bases, dili na sha ma correct. Probably ang first base is pwede sha ma correct because sa kana nga kmer, naa lay isa ka sequencing error. 
+
+
+# ONE SIDED EDGE CASES
+- During sa pag one sided correction. If I revert ang bases, ang regions indices from that corrections is need bapod  i reset?
+- If prev region end is nag correct and gi revert, then for the next region executing correction with orientation to the left is  ma apektohan 
