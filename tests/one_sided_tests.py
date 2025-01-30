@@ -6,6 +6,7 @@ from test_modules import (
     count_occurence,
     identify_trusted_regions,
     generate_kmers,
+    in_spectrum
 )
 from test_correction_modules import (
     correct_read_one_sided_right,
@@ -17,7 +18,7 @@ class OneSidedTests(unittest.TestCase):
     def test_one_sided_core(self):
         MAX_LEN = 300
         spectrum = []
-        kmer_length = 13
+        kmer_length = 4
         local_read = [
             4,
             2,
@@ -44,7 +45,7 @@ class OneSidedTests(unittest.TestCase):
             2,
             3,
             4,
-            5,
+            1,
             4,
             2,
         ]
@@ -62,33 +63,25 @@ class OneSidedTests(unittest.TestCase):
         local_read_len = len(local_read)
         num_kmers = len(local_read) - (kmer_length - 1)
         # array that keep tracks of corrections made for every kmer
-        correction_tracker = np.zeros(MAX_LEN, dtype="uint8")
         bases = np.zeros(4, dtype="uint8")
         start, end = 0, len(local_read)
         region_indices = np.zeros((10, 2), dtype="int8")
         solids = np.zeros(MAX_LEN, dtype="int8")
-
         # seeding bases
         for idx in range(4):
             bases[idx] = idx + 1
         print(local_read)
-        print(local_read[local_read_len // 2 : local_read_len // 2 + kmer_length])
-        dummy = local_read[local_read_len // 2 : local_read_len // 2 + kmer_length]
-        dummy[0] = 2
-        spectrum.append([transform_to_key(dummy, kmer_length), 1])
-        local_read[local_read_len // 2] = 1
+        spectrum.append([1242, 1])
+        spectrum.append([3213, 1])
+        spectrum.append([3413, 1])
+        local_read[14] = 4
+        local_read[22] = 4
+        local_read[26] = 2
         local_read[1] = 3
-        # modify random bases in the local read
-        # for _ in range(10):
-        #     random_idx = random.randint(0, 20)
-        #     local_read[random_idx] = random.randint(1, 4)
-        #
-        # for _ in range(10):
-        #     random_idx = random.randint(80, local_read_len)
-        #     local_read[random_idx] = random.randint(1, 4)
 
         # run one sided for a number of time
-        for _ in range(2):
+        max_correction = 4
+        for _ in range(max_correction):
             # seeding solids with -1s
             for idx in range(len(local_read)):
                 solids[idx] = -1
@@ -113,124 +106,203 @@ class OneSidedTests(unittest.TestCase):
 
                 # there is no next region
                 if region == (regions_count - 1):
-                    region_end = region_indices[region][1]
+                        print("Entering for region going right that has no next region")
+                        region_end = region_indices[region][1]
+                        original_region_end = region_end
+                        corrections_count = 0
+                        last_position = -1
+                        original_bases = local_read[region_end + 1 :]
+                        # while we are not at the end base of the read
+                        while region_end != (end - start) - 1:
+                            target_pos = region_end + 1
+                            # keep track the number of corrections made here
+                            if not correct_read_one_sided_right(
+                                local_read,
+                                region_end,
+                                spectrum,
+                                kmer_length,
+                                bases,
+                                alternatives,
+                            ):
+                                print(f"Correcting towards right for index {target_pos} is not successful") 
+                                break
 
-                    # while we are not at the end base of the read
-                    while region_end != (end - start) - 1:
-                        if not correct_read_one_sided_right(
-                            local_read,
-                            region_end,
-                            spectrum,
-                            kmer_length,
-                            bases,
-                            alternatives,
-                            correction_tracker,
-                            num_kmers - 1,
-                            end - start,
-                        ):
-                            print(
-                                f"Correction toward right for idx: {region_end + 1} is not successful"
-                            )
-                            break
+                            # extend the portion of region end for successful correction and check the number of corrections done
+                            else:
+                                if last_position < 0:
+                                    last_position = target_pos
+                                if target_pos - last_position < kmer_length:
+                                    corrections_count += 1
 
-                        # extend the portion of region end for successful correction
-                        else:
-                            print(
-                                f"Correction in index {region_end + 1} orientation going right is successful"
-                            )
-                            region_end += 1
-                            region_indices[region][1] = region_end
+                                    # revert back bases from last position to target position and revert region
+                                    # prevents cumulative incorrect corrections
+                                    if corrections_count > max_correction:
+                                        print(f"Index from {last_position} to {target_pos} have exceed maximum corrections")
+                                        for pos in range(last_position, target_pos + 1):
+                                            local_read[pos] = original_bases[
+                                                pos - last_position
+                                            ]
+                                        region_indices[region][1] = original_region_end
+                                        print("stopping correction")
+                                        break
+                                    region_end += 1
+                                    region_indices[region][1] = target_pos
+                                # recalculate the last position 
+                                else:
+                                    print("Resetting last position in correction orientation right")
+                                    last_position = target_pos
+                                    original_region_end = target_pos
+                                    corrections_count = 0
+                                    region_end += 1
+                                    region_indices[region][1] = target_pos
 
                 # there is a next region
-                if region != (regions_count - 1):
-                    region_end = region_indices[region][1]
-                    next_region_start = region_indices[region + 1][0]
+                elif region != (regions_count - 1):
+                        print("Entering for region going right that has next region")
+                        region_end = region_indices[region][1]
+                        original_region_end = region_end
+                        next_region_start = region_indices[region + 1][0]
+                        original_bases = local_read[region_end + 1 :]
+                        last_position = -1
+                        corrections_count = 0
+                        # the loop will not stop until it does not find another region
+                        while region_end != (next_region_start - 1):
+                            target_pos = region_end + 1
+                            if not correct_read_one_sided_right(
+                                local_read,
+                                region_end,
+                                spectrum,
+                                kmer_length,
+                                bases,
+                                alternatives,
+                            ):
+                                # fails to correct this region and on this orientation
+                                print(f"Correting towards right for index {target_pos} is not successful") 
+                                break
 
-                    # the loop will not stop until it does not find another region
-                    while region_end != (next_region_start - 1):
-                        if not correct_read_one_sided_right(
-                            local_read,
-                            region_end,
-                            spectrum,
-                            kmer_length,
-                            bases,
-                            alternatives,
-                            correction_tracker,
-                            num_kmers - 1,
-                            end - start,
-                        ):
-                            # fails to correct this region and on this orientation
-                            print(
-                                f"Correction toward right for idx: {region_end + 1} is not successful "
-                            )
-                            break
+                            # extend the portion of region end for successful correction
+                            else:
 
-                        # extend the portion of region end for successful correction
-                        else:
-                            print(
-                                f"Correction in index {region_end + 1} orientation going right is successful"
-                            )
-                            region_end += 1
-                            region_indices[region][1] = region_end
+                                if last_position < 0:
+                                    last_position = target_pos
+                                if target_pos - last_position < kmer_length:
+                                    corrections_count += 1
+
+                                    # revert back bases from last position to target position and stop correction for this region oritentation
+                                    if corrections_count > max_correction:
+                                        print(f"Index from {last_position} to {target_pos} have exceed maximum corrections")
+                                        for pos in range(last_position, target_pos + 1):
+                                            local_read[pos] = original_bases[
+                                                pos - last_position
+                                            ]
+                                        region_indices[region][1] = original_region_end
+                                        print("stopping correction")
+                                        break
+                                    region_end += 1
+                                    region_indices[region][1] = target_pos
+
+                                # recalculate the last position and reset corrections made
+                                else:
+                                    print("Resetting last position in correction orientation right")
+                                    last_position = target_pos
+                                    original_region_end = target_pos
+                                    corrections_count = 0
+                                    region_end += 1
+                                    region_indices[region][1] = target_pos
 
                 # going towards left of the region
                 # we are the leftmost region
-                if region - 1 == -1:
-                    region_start = region_indices[region][0]
+                if region == 0:
+                        print("Entering for region going left that is the leftmost region")
+                        region_start = region_indices[region][0]
+                        original_region_start = region_start
+                        last_position = -1
+                        corrections_count = 0
+                        original_bases = local_read[0 : region_start + 1]
 
-                    # while we are not at the first base of the read
-                    while region_start != 0:
-                        if not correct_read_one_sided_left(
-                            local_read,
-                            region_start,
-                            spectrum,
-                            kmer_length,
-                            bases,
-                            alternatives,
-                            correction_tracker,
-                            num_kmers - 1,
-                            end - start,
-                        ):
-                            print(
-                                f"Correction toward left for idx: {region_start - 1} is not successful "
-                            )
-                            break
-                        else:
-                            print(
-                                f"Correction in index {region_start - 1} orientation going left is successful"
-                            )
-                            region_start -= 1
-                            region_indices[region][0] = region_start
+                        # while we are not at the first base of the read
+                        while region_start > 0:
+                            target_pos = region_start - 1
+                            if not correct_read_one_sided_left(
+                                local_read,
+                                region_start,
+                                spectrum,
+                                kmer_length,
+                                bases,
+                                alternatives,
+                            ):
+
+                                print(f"Correcting towards left for index {target_pos} is not successful") 
+                                break
+                            else:
+                                if last_position < 0:
+                                    last_position = target_pos
+                                if last_position - target_pos < kmer_length:
+                                    corrections_count += 1
+                                    # revert back bases
+                                    if corrections_count > max_correction:
+                                        print(f"Index from {target_pos} to {last_position} have exceed maximum corrections")
+                                        for pos in range(target_pos, last_position + 1):
+                                            local_read[pos] = original_bases[pos]
+                                        region_indices[region][0] = original_region_start
+                                        print("stopping correction")
+                                        break
+                                    region_start -= 1
+                                    region_indices[region][0] = region_start
+                                else:
+                                    print("Resetting last position in correction orientation left")
+                                    last_position = target_pos
+                                    original_region_start = target_pos
+                                    corrections_count = 0
+                                    region_start = target_pos
+                                    region_indices[region][0] = region_start
 
                 # there is another region in the left side of this region
-                if region - 1 != -1:
-                    region_start, prev_region_end = (
-                        region_indices[region][0],
-                        region_indices[region - 1][1],
-                    )
-                    while region_start - 1 != (prev_region_end):
+                elif region > 0:
+                        print("Entering for region going left that has preceeding next region")
+                        region_start, prev_region_end = (
+                            region_indices[region][0],
+                            region_indices[region - 1][1],
+                        )
+                        original_region_start = region_start
+                        last_position = -1
+                        corrections_count = 0
+                        original_bases = local_read[0 : region_start + 1]
 
-                        if not correct_read_one_sided_left(
-                            local_read,
-                            region_start,
-                            spectrum,
-                            kmer_length,
-                            bases,
-                            alternatives,
-                            correction_tracker,
-                            num_kmers - 1,
-                            end - start,
-                        ):
-                            print(
-                                f"Correction toward left for idx: {region_start - 1} is not successful "
-                            )
-                            break
-                        else:
-                            print(
-                                f"Correction in index {region_start - 1} orientation going left is successful"
-                            )
-                            region_start -= 1
-                            region_indices[region][0] = region_start
+                        while region_start - 1 > (prev_region_end):
+                            target_pos = region_start - 1
+                            if not correct_read_one_sided_left(
+                                local_read,
+                                region_start,
+                                spectrum,
+                                kmer_length,
+                                bases,
+                                alternatives,
+                            ):
+                                print(f"Correcting towards left for index {target_pos} is not successful") 
+                                break
+                            else:
+                                if last_position < 0:
+                                    last_position = target_pos
+                                if last_position - target_pos < kmer_length:
+                                    corrections_count += 1
+                                    # revert back bases
+                                    if corrections_count > max_correction:
+                                        print(f"Index from {target_pos} to {last_position} have exceed maximum corrections")
+                                        for pos in range(target_pos, last_position + 1):
+                                            local_read[pos] = original_bases[pos]
+                                        region_indices[region][0] = original_region_start
+                                        print("stopping correction")
+                                        break
+                                    region_start -= 1
+                                    region_indices[region][0] = region_start
+                                else:
+                                    print("Resetting last position in correction orientation left")
+                                    last_position = target_pos
+                                    original_region_start = target_pos
+                                    corrections_count = 0
+                                    region_start -= 1
+                                    region_indices[region][0] = region_start
 
         # endfor
 

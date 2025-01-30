@@ -6,6 +6,7 @@ from Bio import Seq
 import ray
 
 
+
 # function that checks the kmer tracker and reverse back kmers thats been corrected greater than max allowed
 @cuda.jit(device=True)
 def check_tracker(
@@ -20,30 +21,6 @@ def check_tracker(
         if kmer_tracker[idx] > max_corrections_allowed:
             for base_idx in range(idx, idx + kmer_len):
                 local_read[base_idx] = original_read[base_idx]
-
-
-# computes the kmer that are affected for the correction and increment the correction count on each computed kmer
-@cuda.jit(device=True)
-def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
-    if base_idx < kmer_len:
-        for idx in range(0, base_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-
-    if base_idx > (read_length - (kmer_len - 1)):
-        min = base_idx - (kmer_len - 1)
-        for idx in range(min, max_kmer_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-
-    min = base_idx - (kmer_len - 1)
-    if base_idx > max_kmer_idx:
-        for idx in range(min, max_kmer_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-    for idx in range(min, base_idx + 1):
-        kmer_counter_list[idx] += 1
-    return
 
 
 @cuda.jit(device=True)
@@ -264,21 +241,22 @@ def count_error_reads(solids_batch, len):
 #lookahead validation of succeeding kmers
 @cuda.jit(device=True)
 def successor(
-    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
+    kmer_length, local_read, kmer_spectrum , alternative_base, max_traverse, ipos
 ):
+    seqlen = len(local_read) - ipos - 1
+    offset = ipos + 1
     # edge cases
-    if target_pos > len(local_read) - kmer_length:
+    if seqlen < kmer_length:
         return True
-
-    # ipos represents the starting index for successors kmers
-    ipos = target_pos - (kmer_length - 2)
+    end_idx = seqlen - kmer_length
+    idx = 0
     traversed_count = 0
     counter = kmer_length - 2
-    for idx in range(ipos, target_pos + 1):
+    while idx <= end_idx:
         if traversed_count >= max_traverse:
             return True
 
-        alternative_kmer = local_read[idx : idx + kmer_length]
+        alternative_kmer = local_read[offset + idx : offset + idx + kmer_length]
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
 
@@ -286,6 +264,7 @@ def successor(
             return False
         counter -= 1
         traversed_count += 1
+        idx += 1
 
     return True
 
@@ -314,3 +293,7 @@ def predeccessor(
         traversed_count += 1
 
     return True
+# @cuda.jit(device=True)
+# def select_mutations(spectrum, kmer, base_idx, bases):
+#     for base in bases:
+#         if in spectrum

@@ -2,7 +2,6 @@ from test_modules import (
     in_spectrum,
     transform_to_key,
     give_kmer_multiplicity,
-    mark_kmer_counter,
     successor,
     predeccessor
 
@@ -66,9 +65,6 @@ def correct_read_one_sided_right(
     kmer_len,
     bases,
     alternatives,
-    kmer_tracker,
-    max_kmer_idx,
-    read_length,
 ):
 
     possibility = 0
@@ -77,7 +73,8 @@ def correct_read_one_sided_right(
     target_pos = region_end + 1
     ipos = target_pos - (kmer_len - 1)
 
-    forward_kmer = local_read[ipos: target_pos]
+    forward_kmer = local_read[ipos: target_pos + 1]
+    print(forward_kmer)
 
     # foreach alternative base
     for alternative_base in bases:
@@ -95,6 +92,7 @@ def correct_read_one_sided_right(
             possibility += 1
             alternative = alternative_base
 
+    print(f"Possibility: {possibility}")
     # returning false will should cause the caller to break the loop since it fails to correct (base on the Musket paper)
     if possibility == 0:
         return False
@@ -103,9 +101,7 @@ def correct_read_one_sided_right(
     if possibility == 1:
 
         local_read[region_end + 1] = alternative
-        mark_kmer_counter(
-            target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
-        )
+        print(f"is potential correction (orientation right) -> {target_pos}: {True}, Base: {alternative}")
         return True
 
     # we have to iterate the number of alternatives and find the max element
@@ -118,11 +114,11 @@ def correct_read_one_sided_right(
                 kmer_len,
                 local_read,
                 kmer_spectrum,
-                target_pos,
                 alternatives[idx][0],
                 2,
+                ipos
             )
-            print(f"is potential correction (orientation right) -> {target_pos}: {is_potential_correction}")
+            print(f"is potential correction (orientation right) -> {target_pos}: {is_potential_correction}, Base: {alternatives[idx][0]}")
             if is_potential_correction:
                 if alternatives[idx][1] > choosen_alternative_base_occurence:
                     choosen_alternative_base = alternatives[idx][0]
@@ -130,9 +126,6 @@ def correct_read_one_sided_right(
 
         if choosen_alternative_base_occurence != -1 and choosen_alternative_base != -1:
             local_read[target_pos] = choosen_alternative_base
-            mark_kmer_counter(
-                region_end + 1, kmer_tracker, kmer_len, max_kmer_idx, read_length
-            )
             return True
         return False
 
@@ -144,9 +137,6 @@ def correct_read_one_sided_left(
     kmer_len,
     bases,
     alternatives,
-    kmer_tracker,
-    max_kmer_idx,
-    read_length,
 ):
 
     possibility = 0
@@ -177,7 +167,6 @@ def correct_read_one_sided_left(
     if possibility == 1:
 
         local_read[target_pos] = alternative
-        mark_kmer_counter(target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length)
         return True
 
     # we have to iterate the number of alternatives and find the max element
@@ -202,9 +191,6 @@ def correct_read_one_sided_left(
 
         if choosen_alternative_base_occurence != -1 and choosen_alternative_base != -1:
             local_read[target_pos] = choosen_alternative_base
-            mark_kmer_counter(
-                target_pos, kmer_tracker, kmer_len, max_kmer_idx, read_length
-            )
             return True
         return False
 

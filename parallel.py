@@ -108,7 +108,6 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     # dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
-    kmers_tracker = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="uint8"))
     not_corrected_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype="int16"))
     # allocating gpu threads
     tbp = 512
@@ -134,13 +133,12 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
         dev_offsets,
         kmer_len,
         not_corrected_counter,
-        kmers_tracker,
     )
 
     # calculates the solidity of kmer after two sided correction
-    # calculate_reads_solidity[bpg, tbp](
-    #     dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
-    # )
+    calculate_reads_solidity[bpg, tbp](
+        dev_reads_1d, dev_offsets, dev_solids_after, kmer_len, dev_kmer_spectrum
+    )
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
@@ -151,7 +149,6 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
         dev_solids.copy_to_host(),
         dev_solids_after.copy_to_host(),
         dev_reads_1d.copy_to_host(),
-        kmers_tracker.copy_to_host(),
     ]
 
 
@@ -302,26 +299,19 @@ if __name__ == "__main__":
     sort_end_time = time.perf_counter()
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
-    [solids_before, solids_after, corrected_reads_array, kmers_tracker] = ray.get(
+    [solids_before, solids_after, corrected_reads_array] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
 
-    print("reads solidity after two sided")
-    # ray.get(
-    #     [
-    #         count_error_reads.remote(
-    #             solids_before[batch_idx : batch_idx + batch_size], 100
-    #         )
-    #         for batch_idx in range(0, len(solids_before), batch_size)
-    #     ]
-    # )
-    # print("Number of kmers that exceeds maximal allowed corrections")
-    # ray.get(
-    #     [
-    #         check_corrections.remote(kmers_tracker[batch_idx : batch_idx + batch_size])
-    #         for batch_idx in range(0, len(kmers_tracker), batch_size)
-    #     ]
-    # )
+    print("reads solidity after one sided")
+    ray.get(
+        [
+            count_error_reads.remote(
+                solids_after[batch_idx : batch_idx + batch_size], 100
+            )
+            for batch_idx in range(0, len(solids_after), batch_size)
+        ]
+    )
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(

@@ -23,8 +23,10 @@ def transform_to_key(ascii_kmer, len):
 
 
 def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
+    length = end - start
+    endpos = length - (kmer_len - 1)
 
-    for idx in range(0, (end - start) - (kmer_len - 1)):
+    for idx in range(0, endpos):
         ascii_kmer = local_reads[idx : idx + kmer_len]
 
         curr_kmer = transform_to_key(ascii_kmer, kmer_len)
@@ -83,116 +85,12 @@ def identify_trusted_regions(
     return current_indices_idx
 
 
-def mark_kmer_counter(base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length):
-    if base_idx < kmer_len:
-        for idx in range(0, base_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-
-    if base_idx > (read_length - (kmer_len - 1)):
-        min = base_idx - (kmer_len - 1)
-        for idx in range(min, max_kmer_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-
-    min = base_idx - (kmer_len - 1)
-    if base_idx > max_kmer_idx:
-        for idx in range(min, max_kmer_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-    for idx in range(min, base_idx + 1):
-        kmer_counter_list[idx] += 1
-    return
-
-
 def give_kmer_multiplicity(kmer_spectrum, kmer):
     if not in_spectrum(kmer_spectrum, kmer):
         return -1
 
     return 100
 
-
-# The successor implementation of lookahead validation
-def lookahead_successor(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    modified_base_idx,
-    alternative_base,
-    neighbors_max_count=2,
-):
-
-    available_neighbors = min(
-        modified_base_idx, kmer_length, len(local_read) - modified_base_idx
-    )
-
-    # if no neighbors
-    if (
-        modified_base_idx > len(local_read) - kmer_length
-        or modified_base_idx < kmer_length
-    ):
-        print("Something error went wrong")
-        return True
-    # start index is after forward kmer. (That's why -2)
-    # I should calculate the number of neighbors available to check and the stride of neighbors to check
-    start_idx = modified_base_idx - (kmer_length - 2)
-
-    # calculated number of neighbors
-    max_end_idx = modified_base_idx
-    counter = kmer_length - 2
-    neighbors_traversed = 0
-
-    for idx in range(start_idx, max_end_idx + 1):
-
-        # I might try to limit the max neighbors to be traversed
-        if neighbors_traversed >= neighbors_max_count:
-            break
-
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            print(f"{transformed_alternative_kmer} is not in spectrum")
-            return False
-        print(
-            f"counter: {counter}, start idx: {start_idx}, max end idx: {max_end_idx}, neighbors available: {available_neighbors}"
-        )
-        print(f"{transformed_alternative_kmer} exists")
-        counter -= 1
-        neighbors_traversed += 1
-
-    return True
-
-
-def predeccessor_revised(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    seq_len,
-    alternative_base,
-    neighbors_count,
-):
-
-    if seq_len <= 0 or seq_len > (len(local_read) - kmer_length):
-        print("Something error went wrong")
-        return True
-
-    counter = 1
-    neighbors_traversed = 0
-
-    for idx in range(seq_len, -1, -1):
-        if neighbors_traversed >= neighbors_count:
-            break
-
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            return False
-
-        neighbors_traversed += 1
-        counter += 1
-    return True
 
 def predeccessor(
     kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
@@ -202,6 +100,7 @@ def predeccessor(
         return True
     counter = 1
     traversed_count = 0
+    print(f"running predeccessor for indices:")
     for idx in range(ipos, -1, -1):
         if traversed_count >= max_traverse:
             return True
@@ -219,61 +118,27 @@ def predeccessor(
 
     return True
 
-def lookahead_predeccessor(
-    kmer_length,
-    local_read,
-    kmer_spectrum,
-    modified_base_idx,
-    alternative_base,
-    neighbors_count,
-):
-    # available_neighbors = min(
-    #     kmer_length, modified_base_idx, len(local_read) - modified_base_idx
-    # )
-    neighbors_traversed = 0
-
-    # starting index for modified base within preceeding kmer
-    counter = 1
-
-    # when modified base idx is zero, it means no available neighbors
-    if modified_base_idx <= 0:
-        return True
-
-    idx = modified_base_idx - 1
-    print(f"Within predeccesor with alternative base:{alternative_base}")
-    while idx >= 0:
-        if neighbors_traversed >= neighbors_count:
-            break
-        alternative_kmer = local_read[idx : idx + kmer_length]
-        print(f"Kmer starting from index: {idx} to index: {idx + kmer_length}")
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-        if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
-            return False
-
-        idx -= 1
-        counter += 1
-        neighbors_traversed += 1
-
-    return True
 
 
 def successor(
-    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
+    kmer_length, local_read, kmer_spectrum , alternative_base, max_traverse, ipos
 ):
+    seqlen = len(local_read) - ipos - 1
+    offset = ipos + 1
     # edge cases
-    if target_pos > len(local_read) - kmer_length:
+    if seqlen < kmer_length:
         return True
-
-    # ipos represents the starting index for successors kmers
-    ipos = target_pos - (kmer_length - 2)
+    end_idx = seqlen - kmer_length
+    idx = 0
     traversed_count = 0
     counter = kmer_length - 2
-    for idx in range(ipos, target_pos):
+    print("running successor in index:")
+    while idx <= end_idx:
         if traversed_count >= max_traverse:
             return True
 
-        alternative_kmer = local_read[idx : idx + kmer_length]
+        print(f"Start: {offset + idx} end: {offset + idx + kmer_length - 1}")
+        alternative_kmer = local_read[offset + idx : offset + idx + kmer_length]
         alternative_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
 
@@ -281,8 +146,10 @@ def successor(
             return False
         counter -= 1
         traversed_count += 1
+        idx += 1
 
     return True
+
 
 def generate_kmers(read, kmer_length, kmer_spectrum):
     for idx in range(0, len(read) - (kmer_length - 1)):
