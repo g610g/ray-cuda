@@ -25,14 +25,14 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
         rpossible_base_mutations = cuda.local.array(10,dtype='uint8')
         lpossible_base_mutations = cuda.local.array(10,dtype='uint8')
         size = (end - start)  - kmer_len
-        max_corrections = 2
+        max_iters = 2
         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(0, end - start):
             local_reads[idx] = reads[idx + start]
         for i in range(4):
             bases[i] = i + 1
 
-        for _ in range(max_corrections):
+        for _ in range(max_iters):
             for i in range(end - start):
                 solids[i] = -1
 
@@ -60,7 +60,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                 
                 #select all possible mutations for rkmer
                 rnum_bases = 0
-                roriginal_base = rkmer[0]
+               
                 for base in bases:
                     rkmer[0] = base
                     candidate_kmer = transform_to_key(rkmer, kmer_len)
@@ -70,7 +70,6 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                     
                 #select all possible mutations for lkmer
                 lnum_bases = 0
-                loriginal_base = lkmer[lpos]
                 for base in bases:
                     lkmer[lpos] = base
                     candidate_kmer = transform_to_key(lkmer, kmer_len)
@@ -100,8 +99,9 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
             
             #for bases > (end - start) - klen)
 
-            rkmer = local_reads[size:]
+            
             for ipos in range(size + 1, end - start):
+                rkmer = local_reads[size:]
                 lkmer = local_reads[ipos - klen_idx: ipos + 1]
                 if solids[ipos] == 1:
                     continue
@@ -113,9 +113,10 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                     if in_spectrum(kmer_spectrum, candidate_kmer):
                         rpossible_base_mutations[rnum_bases] = base
                         rnum_bases += 1
+                lnum_bases = 0
                 for base in bases:
                     lkmer[-1] = base
-                    candidate_kmer = transform_to_key(rkmer, kmer_len)
+                    candidate_kmer = transform_to_key(lkmer, kmer_len)
                     if in_spectrum(kmer_spectrum, candidate_kmer):
                         lpossible_base_mutations[lnum_bases] = base
                         lnum_bases += 1
@@ -136,62 +137,11 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                 #apply correction to the current base
                 if num_corrections == 1 and potential_base != -1:
                     local_reads[ipos] = potential_base
+        #bring local read back to global memory reads
+        for idx in range(end - start):
+            reads[idx + start] = local_reads[idx]
 
 
-@cuda.jit(device=True)
-def correct_reads_two_sided(
-    idx,
-    local_reads,
-    kmer_len,
-    kmer_spectrum,
-    bases,
-    left_kmer,
-    right_kmer,
-):
-    current_base = local_reads[idx]
-    posibility = 0
-    candidate = -1
-
-    for alternative_base in bases:
-        if alternative_base != current_base:
-
-            # array representation
-            left_kmer[-1] = alternative_base
-            right_kmer[0] = alternative_base
-
-            # whole number representation
-            candidate_left = transform_to_key(left_kmer, kmer_len)
-            candidate_right = transform_to_key(right_kmer, kmer_len)
-
-            # the alternative base makes our kmers trusted
-            if in_spectrum(kmer_spectrum, candidate_left) and in_spectrum(
-                kmer_spectrum, candidate_right
-            ):
-                posibility += 1
-                candidate = alternative_base
-
-    if posibility == 1:
-        local_reads[idx] = candidate
-        # corrected_counter[threadIdx][counter] = posibility
-        # counter += 1
-
-    if posibility == 0:
-        pass
-        # corrected_counter[threadIdx][counter] = 10
-        # counter += 1
-
-    # ignore the correction if more than one possibility
-    # check whether base is potential for correction
-    # kulang pani diria sa pag check sa first and last bases
-    if posibility > 1:
-        pass
-        # corrected_counter[threadIdx][counter] = posibility
-        # counter += 1
-
-    # return counter
-
-
-# no implementation for tracking how many corrections are done for each kmers in the read
 @cuda.jit()
 def one_sided_kernel(
     kmer_spectrum,
@@ -247,7 +197,7 @@ def one_sided_kernel(
                 if regions_count == 0:
                     return
                 # for reads that has no error 
-                if regions_count == 1 and regions_count[0][0] == 0 and regions_count[0][1] == 99:
+                if regions_count == 1 and region_indices[0][0] == 0 and region_indices[0][1] == 99:
                     return
 
                 for region in range(regions_count):
@@ -436,26 +386,26 @@ def one_sided_kernel(
                                     region_start -= 1
                                     region_indices[region][0] = region_start
 
-            # voting_end_idx = (end - start) - kmer_len
-            # for idx in range(0, voting_end_idx):
-            #     # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
-            #     # for idx in range(start, end - (kmer_len - 1)):
-            #     ascii_curr_kmer = local_read[idx : idx + kmer_len]
-            #     curr_kmer = transform_to_key(ascii_curr_kmer, kmer_len)
-            #
-            #     # invoke voting if the kmer is not in spectrum
-            #     if not in_spectrum(kmer_spectrum, curr_kmer):
-            #         invoke_voting(
-            #             voting_matrix,
-            #             kmer_spectrum,
-            #             bases,
-            #             kmer_len,
-            #             idx,
-            #             local_read,
-            #         )
-            # # apply the result of the vm into the reads
-            # apply_vm_result(voting_matrix, local_read, start, end)
-        # endfor
+            voting_end_idx = (end - start) - kmer_len
+            for idx in range(0, voting_end_idx):
+                # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
+                # for idx in range(start, end - (kmer_len - 1)):
+                ascii_curr_kmer = local_read[idx : idx + kmer_len]
+                curr_kmer = transform_to_key(ascii_curr_kmer, kmer_len)
+            
+                # invoke voting if the kmer is not in spectrum
+                if not in_spectrum(kmer_spectrum, curr_kmer):
+                    invoke_voting(
+                        voting_matrix,
+                        kmer_spectrum,
+                        bases,
+                        kmer_len,
+                        idx,
+                        local_read,
+                    )
+            # apply the result of the vm into the reads
+            apply_vm_result(voting_matrix, local_read, start, end)
+        # endfor idx to max_corrections
 
         # copies back corrected local read into global memory stored reads
         for idx in range(end - start):
