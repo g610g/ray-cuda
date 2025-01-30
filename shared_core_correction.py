@@ -33,114 +33,131 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
             bases[i] = i + 1
 
         for _ in range(max_iters):
-            for i in range(end - start):
-                solids[i] = -1
-
-            # identify whether base is solid or not
-            identify_solid_bases(
-                local_reads, start, end, kmer_len, kmer_spectrum, solids
-            )
+            num_corrections = correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_reads, lpossible_base_mutations, rpossible_base_mutations, size)
             
-            klen_idx = kmer_len - 1
-            for ipos in range(0, size + 1):
-                lpos = 0
-                if ipos >= 0:
-                   rkmer = local_reads[ipos: ipos + kmer_len] 
-                if ipos >= kmer_len:
-                    lkmer = local_reads[ipos - klen_idx: ipos + 1]
-                    lpos = -1
-                else: 
-                    lkmer = local_reads[0: kmer_len]
-                    lpos = ipos
-                #trusted base
-                if solids[ipos] == 1:
-                    continue
-
-                #do corrections right here
-                
-                #select all possible mutations for rkmer
-                rnum_bases = 0
-               
-                for base in bases:
-                    rkmer[0] = base
-                    candidate_kmer = transform_to_key(rkmer, kmer_len)
-                    if in_spectrum(kmer_spectrum, candidate_kmer):
-                        rpossible_base_mutations[rnum_bases] = base
-                        rnum_bases += 1 
-                    
-                #select all possible mutations for lkmer
-                lnum_bases = 0
-                for base in bases:
-                    lkmer[lpos] = base
-                    candidate_kmer = transform_to_key(lkmer, kmer_len)
-                    if in_spectrum(kmer_spectrum, candidate_kmer):
-                        lpossible_base_mutations[lnum_bases] = base
-                        lnum_bases += 1
-
-                i = 0
-                num_corrections = 0
-                potential_base = -1
-                while(i < rnum_bases and num_corrections <= 1):
-                    rbase = rpossible_base_mutations[i]
-                    j = 0 
-                    while (j < lnum_bases):
-                        lbase = lpossible_base_mutations[j]
-                        #add the potential correction
-                        if lbase == rbase:
-                            num_corrections += 1
-                            potential_base = rbase
-                        j += 1
-                    i += 1
-                #apply correction to the current base
-                if num_corrections == 1 and potential_base != -1:
-                    local_reads[ipos] = potential_base
-            
-            #endfor  0 < seqlen - klen
-            
-            #for bases > (end - start) - klen)
-
-            
-            for ipos in range(size + 1, end - start):
-                rkmer = local_reads[size:]
-                lkmer = local_reads[ipos - klen_idx: ipos + 1]
-                if solids[ipos] == 1:
-                    continue
-                #select mutations for right kmer
-                rnum_bases  = 0
-                for base in bases:
-                    rkmer[ipos - size] = base
-                    candidate_kmer = transform_to_key(rkmer, kmer_len)
-                    if in_spectrum(kmer_spectrum, candidate_kmer):
-                        rpossible_base_mutations[rnum_bases] = base
-                        rnum_bases += 1
-                lnum_bases = 0
-                for base in bases:
-                    lkmer[-1] = base
-                    candidate_kmer = transform_to_key(lkmer, kmer_len)
-                    if in_spectrum(kmer_spectrum, candidate_kmer):
-                        lpossible_base_mutations[lnum_bases] = base
-                        lnum_bases += 1
-                i = 0
-                num_corrections = 0
-                potential_base = -1
-                while(i < rnum_bases and num_corrections <= 1):
-                    rbase = rpossible_base_mutations[i]
-                    j = 0 
-                    while (j < lnum_bases):
-                        lbase = lpossible_base_mutations[j]
-                        #add the potential correction
-                        if lbase == rbase:
-                            num_corrections += 1
-                            potential_base = rbase
-                        j += 1
-                    i += 1
-                #apply correction to the current base
-                if num_corrections == 1 and potential_base != -1:
-                    local_reads[ipos] = potential_base
+            #this read is error free. Stop correction
+            if num_corrections == 0:
+                return
+            if num_corrections < 0:
+                break
         #bring local read back to global memory reads
         for idx in range(end - start):
             reads[idx + start] = local_reads[idx]
 
+@cuda.jit(device=True)
+def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size):
+    for i in range(end - start):
+        solids[i] = -1
+
+    # identify whether base is solid or not
+    identify_solid_bases(
+        local_read, start, end, kmer_len, kmer_spectrum, solids
+    )
+    
+    #check whether solids array does not contain -1, return 0 if yes
+
+    klen_idx = kmer_len - 1
+    for ipos in range(0, size + 1):
+        lpos = 0
+        if ipos >= 0:
+            rkmer = local_read[ipos: ipos + kmer_len] 
+        if ipos >= kmer_len:
+            lkmer = local_read[ipos - klen_idx: ipos + 1]
+            lpos = -1
+        else: 
+            lkmer = local_read[0: kmer_len]
+            lpos = ipos
+        #trusted base
+        if solids[ipos] == 1:
+            continue
+
+        #do corrections right here
+        
+        #select all possible mutations for rkmer
+        rnum_bases = 0
+        for base in bases:
+            rkmer[0] = base
+            candidate_kmer = transform_to_key(rkmer, kmer_len)
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+                rpossible_base_mutations[rnum_bases] = base
+                rnum_bases += 1 
+            
+        #select all possible mutations for lkmer
+        lnum_bases = 0
+        for base in bases:
+            lkmer[lpos] = base
+            candidate_kmer = transform_to_key(lkmer, kmer_len)
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+                lpossible_base_mutations[lnum_bases] = base
+                lnum_bases += 1
+
+        i = 0
+        num_corrections = 0
+        potential_base = -1
+        while(i < rnum_bases and num_corrections <= 1):
+            rbase = rpossible_base_mutations[i]
+            j = 0 
+            while (j < lnum_bases):
+                lbase = lpossible_base_mutations[j]
+                #add the potential correction
+                if lbase == rbase:
+                    num_corrections += 1
+                    potential_base = rbase
+                j += 1
+            i += 1
+        #apply correction to the current base and return from this function
+        if num_corrections == 1 and potential_base != -1:
+            local_read[ipos] = potential_base
+            return 1
+        
+        #two sided stops if num corrections != 1
+        # else:
+        #     break
+    
+    #endfor  0 < seqlen - klen
+    
+    #for bases > (end - start) - klen)
+
+    
+    for ipos in range(size + 1, end - start):
+        rkmer = local_read[size:]
+        lkmer = local_read[ipos - klen_idx: ipos + 1]
+        if solids[ipos] == 1:
+            continue
+        #select mutations for right kmer
+        rnum_bases  = 0
+        for base in bases:
+            rkmer[ipos - size] = base
+            candidate_kmer = transform_to_key(rkmer, kmer_len)
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+                rpossible_base_mutations[rnum_bases] = base
+                rnum_bases += 1
+        lnum_bases = 0
+        for base in bases:
+            lkmer[-1] = base
+            candidate_kmer = transform_to_key(lkmer, kmer_len)
+            if in_spectrum(kmer_spectrum, candidate_kmer):
+                lpossible_base_mutations[lnum_bases] = base
+                lnum_bases += 1
+        i = 0
+        num_corrections = 0
+        potential_base = -1
+        while(i < rnum_bases and num_corrections <= 1):
+            rbase = rpossible_base_mutations[i]
+            j = 0 
+            while (j < lnum_bases):
+                lbase = lpossible_base_mutations[j]
+                #add the potential correction
+                if lbase == rbase:
+                    num_corrections += 1
+                    potential_base = rbase
+                j += 1
+            i += 1
+        #apply correction to the current base and return from this function
+        if num_corrections == 1 and potential_base != -1:
+            local_read[ipos] = potential_base
+            return 1
+    return -1
 
 @cuda.jit()
 def one_sided_kernel(
