@@ -46,11 +46,12 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                 lpos = 0
                 if ipos >= 0:
                    rkmer = local_reads[ipos: ipos + kmer_len] 
-                if ipos >= klen_idx:
+                if ipos >= kmer_len:
                     lkmer = local_reads[ipos - klen_idx: ipos + 1]
                     lpos = -1
                 else: 
-                    lkmer = local_reads[ipos: ipos + kmer_len]
+                    lkmer = local_reads[0: kmer_len]
+                    lpos = ipos
                 #trusted base
                 if solids[ipos] == 1:
                     continue
@@ -84,7 +85,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                     rbase = rpossible_base_mutations[i]
                     j = 0 
                     while (j < lnum_bases):
-                        lbase = rpossible_base_mutations[j]
+                        lbase = lpossible_base_mutations[j]
                         #add the potential correction
                         if lbase == rbase:
                             num_corrections += 1
@@ -125,7 +126,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                     rbase = rpossible_base_mutations[i]
                     j = 0 
                     while (j < lnum_bases):
-                        lbase = rpossible_base_mutations[j]
+                        lbase = lpossible_base_mutations[j]
                         #add the potential correction
                         if lbase == rbase:
                             num_corrections += 1
