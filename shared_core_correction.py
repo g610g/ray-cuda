@@ -4,9 +4,58 @@ from shared_helpers import (
     identify_trusted_regions,
     predeccessor,
     successor,
+    check_solids_cardinality
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
-from voting import apply_vm_result, invoke_voting
+
+
+@cuda.jit(device=True)
+def cast_votes(local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum):
+    #reset voting matrix
+    for i in range(seq_len):
+        for j in range(len(bases)):
+            vm[i][j] = 0
+    max_vote = 0
+    #check each kmer within the read (planning to put the checking of max vote within this iteration)
+    for ipos in range(0, size + 1):
+        
+        ascii_kmer = local_read[ipos: ipos + kmer_len]
+        kmer = transform_to_key(ascii_kmer, kmer_len)
+        if  in_spectrum(kmer_spectrum, kmer):
+            continue
+        for base_idx in range(kmer_len):
+            original_base = ascii_kmer[base_idx]
+            for base in bases:
+                if original_base == base:
+                    continue
+                ascii_kmer[base_idx] = base
+                candidate = transform_to_key(ascii_kmer, kmer_len)
+                if in_spectrum(kmer_spectrum, candidate):
+                    vm[ipos + base_idx][base - 1] += 1
+            ascii_kmer[base_idx] = original_base
+
+    #find maximum vote
+    for ipos in range(0, seq_len):
+        for idx in range(len(bases)):
+           if vm[ipos][idx] >= max_vote:
+               max_vote = vm[ipos][idx]
+
+    return max_vote
+
+@cuda.jit(device=True)
+def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
+    for ipos in range(seq_len):
+        alternative_base = -1
+        for base_idx in range(len(bases)):
+            #why does it have to be equal?
+            if vm[ipos][base_idx] == max_vote:
+                if alternative_base == -1:
+                    alternative_base = base_idx + 1
+                else:
+                    alternative_base = -1
+        #apply the base correction if we have found an alternative base
+        if alternative_base >= 1:
+            local_read[ipos] = alternative_base
 
 
 @cuda.jit
@@ -38,8 +87,11 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
             #this read is error free. Stop correction
             if num_corrections == 0:
                 return
+            
+            #this read has more one than error within a kmer. Pass the read to one sided correction
             if num_corrections < 0:
                 break
+
         #bring local read back to global memory reads
         for idx in range(end - start):
             reads[idx + start] = local_reads[idx]
@@ -53,8 +105,9 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
     identify_solid_bases(
         local_read, start, end, kmer_len, kmer_spectrum, solids
     )
-    
     #check whether solids array does not contain -1, return 0 if yes
+    if check_solids_cardinality(solids, end - start):
+        return 0
 
     klen_idx = kmer_len - 1
     for ipos in range(0, size + 1):
@@ -110,13 +163,10 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
             local_read[ipos] = potential_base
             return 1
         
-        #two sided stops if num corrections != 1
-        # else:
-        #     break
     
     #endfor  0 < seqlen - klen
     
-    #for bases > (end - start) - klen)
+    #for bases > seqlen - klen)
 
     
     for ipos in range(size + 1, end - start):
@@ -157,6 +207,7 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
         if num_corrections == 1 and potential_base != -1:
             local_read[ipos] = potential_base
             return 1
+        
     return -1
 
 @cuda.jit()
@@ -178,12 +229,12 @@ def one_sided_kernel(
         corrected_solids = cuda.local.array(MAX_LEN, dtype="int8")
         region_indices = cuda.local.array((10, 2), dtype="int8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
-        correction_tracker = cuda.local.array(MAX_LEN, dtype="uint8")
         original_read = cuda.local.array(MAX_LEN, dtype="uint8")
-        voting_matrix = cuda.local.array((4, MAX_LEN), dtype="uint16")
+        voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
-        num_kmers = (end - start) - (kmer_len - 1)
+      
         maxIters = 4
+        min_vote = 3
 
         bases = cuda.local.array(4, dtype="uint8")
 
@@ -196,7 +247,8 @@ def one_sided_kernel(
             local_read[idx] = reads[idx + start]
             original_read[idx] = reads[idx + start]
 
-        for max_correction in range(1, maxIters + 1):
+        for nerr in range(1, maxIters + 1):
+            max_correction = maxIters - nerr + 1
             for _ in range(2):
                 for i in range(end - start):
                     solids[i] = -1
@@ -403,25 +455,15 @@ def one_sided_kernel(
                                     region_start -= 1
                                     region_indices[region][0] = region_start
 
-            voting_end_idx = (end - start) - kmer_len
-            for idx in range(0, voting_end_idx):
-                # start of the voting based refinement(havent integrated tracking kmer during apply_vm_result function)
-                # for idx in range(start, end - (kmer_len - 1)):
-                ascii_curr_kmer = local_read[idx : idx + kmer_len]
-                curr_kmer = transform_to_key(ascii_curr_kmer, kmer_len)
+            #start voting refinement here
+            max_vote = cast_votes(local_read, voting_matrix, end - start, kmer_len, bases, (end - start) - kmer_len, kmer_spectrum)
             
-                # invoke voting if the kmer is not in spectrum
-                if not in_spectrum(kmer_spectrum, curr_kmer):
-                    invoke_voting(
-                        voting_matrix,
-                        kmer_spectrum,
-                        bases,
-                        kmer_len,
-                        idx,
-                        local_read,
-                    )
-            # apply the result of the vm into the reads
-            apply_vm_result(voting_matrix, local_read, start, end)
+            #the read is error free at this point
+            if max_vote == 0:
+                return
+            elif max_vote >= min_vote:
+                apply_voting_result(local_read, voting_matrix, (end - start), bases, max_vote)
+        
         # endfor idx to max_corrections
 
         # copies back corrected local read into global memory stored reads

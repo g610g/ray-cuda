@@ -20,7 +20,7 @@ from kmer import *
 # import seaborn as sns
 # import matplotlib.pyplot as plt
 
-ray.init()
+ray.init(dashboard_host='0.0.0.0')
 
 
 @ray.remote(num_gpus=1)
@@ -127,13 +127,13 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     )
 
     # voting refinement is done within the one_sided_kernel
-    # one_sided_kernel[bpg, tbp](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    #     not_corrected_counter,
-    # )
+    one_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+        not_corrected_counter,
+    )
 
     # calculates the solidity of kmer after two sided correction
     calculate_reads_solidity[bpg, tbp](
@@ -304,14 +304,14 @@ if __name__ == "__main__":
     )
 
     print("reads solidity after one sided")
-    ray.get(
-        [
-            count_error_reads.remote(
-                solids_after[batch_idx : batch_idx + batch_size], 100
-            )
-            for batch_idx in range(0, len(solids_after), batch_size)
-        ]
-    )
+    # ray.get(
+    #     [
+    #         count_error_reads.remote(
+    #             solids_after[batch_idx : batch_idx + batch_size], 100
+    #         )
+    #         for batch_idx in range(0, len(solids_after), batch_size)
+    #     ]
+    # )
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(

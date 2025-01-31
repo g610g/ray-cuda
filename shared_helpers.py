@@ -293,7 +293,11 @@ def predeccessor(
         traversed_count += 1
 
     return True
-# @cuda.jit(device=True)
-# def select_mutations(spectrum, kmer, base_idx, bases):
-#     for base in bases:
-#         if in spectrum
+
+@cuda.jit(device=True)
+def check_solids_cardinality(solids, length):
+    for idx in range(length):
+       if solids[idx] == -1:
+           return False
+    return True
+ 

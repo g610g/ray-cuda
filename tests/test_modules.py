@@ -168,3 +168,9 @@ def count_occurence(spectrum):
         new_spectrum.append([kmer, occurence])
 
     return new_spectrum.copy()
+
+def check_solids_cardinality(solids, length):
+    for idx in range(length):
+       if solids[idx] == -1:
+           return False
+    return True
