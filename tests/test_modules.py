@@ -117,6 +117,29 @@ def predeccessor(
         traversed_count += 1
 
     return True
+def predeccessor_v2(
+    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, distance
+):
+    print(f"predeccesor distance: {distance}")
+    ipos = target_pos - 1
+    if ipos <= 0 or distance <= 0:
+        return True
+    spos = max(0, ipos - distance)
+
+    counter = kmer_length - 2
+    for idx in range(ipos - 1, spos - 1, -1):
+        if counter < kmer_length:
+            ascii_kmer = local_read[idx: idx + kmer_length]
+            ascii_kmer[counter] = alternative_base
+            candidate = transform_to_key(ascii_kmer, kmer_length)
+            if not in_spectrum(candidate, kmer_spectrum):
+                return False
+            counter += 1
+        else:
+            ascii_kmer = local_read[idx: idx + kmer_length]
+            candidate = transform_to_key(ascii_kmer, kmer_length)
+            if not in_spectrum(candidate, kmer_spectrum):
+                return False
 
 
 

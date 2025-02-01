@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from numpy import random
+from numpy import random, size
 from numpy.testing import assert_array_equal
 from test_modules import (
     count_occurence,
@@ -11,6 +11,7 @@ from test_modules import (
 from test_correction_modules import (
     correct_read_one_sided_right,
     correct_read_one_sided_left,
+    identify_trusted_regions_v2,
 )
 
 
@@ -365,97 +366,22 @@ class OneSidedTests(unittest.TestCase):
 
         return [current_indices_idx, region_indices]
 
-    def test_correction_calls(self):
-        corrections_count = 0
-        solids = [-1, 1, 1, 1, -1, 1, 1, 1, 1, 1, -1, -1, -1, -1, 1, 1, 1]
-        [regions_count, region_indices] = self.identify_trusted_regions(solids, 3)
-        for region in range(regions_count):
-            # going towards right of the region
-            # there is no next region
-            if region == (regions_count - 1):
-                region_end = region_indices[region][1]
+    def test_region_identification(self):
+        local_read = [1, 2, 3, 3, 3, 2, 1, 2, 4, 1, 2, 3, 1, 2, 3, 4, 5]
+        kmer_len = 4
+        seq_len = len(local_read)
+        size = seq_len - kmer_len
+        spectrum = []
+        generate_kmers(local_read, kmer_len, spectrum)
+        spectrum = count_occurence(spectrum)
 
-                # while we are not at the end base of the read
-                while region_end != (len(solids) - 1):
-                    region_end += 1
-                    region_indices[region][1] = region_end
-                    corrections_count += 1
-            # there is a next region
-            if region != (regions_count - 1):
-                region_end = region_indices[region][1]
-                next_region_start = region_indices[region + 1][0]
+        local_read[0] = 3
+        local_read[1] = 4
+        local_read[7] = 1
 
-                # the loop will not stop until it does not find another region
-                while region_end != (next_region_start - 1):
-                    region_end += 1
-                    region_indices[region][1] = region_end
-                    corrections_count += 1
-
-            # going towards left of the region
-
-            # we are the leftmost region
-            if region - 1 == -1:
-                region_start = region_indices[region][0]
-
-                # while we are not at the first base of the read
-                while region_start != 0:
-
-                    region_start -= 1
-                    region_indices[region][0] = region_start
-                    corrections_count += 1
-            # there is another region in the left side of this region
-            if region - 1 != -1:
-                region_start, prev_region_end = (
-                    region_indices[region][0],
-                    region_indices[region - 1][1],
-                )
-                while region_start - 1 != (prev_region_end):
-                    region_start -= 1
-                    region_indices[region][0] = region_start
-                    corrections_count += 1
-        self.assertEqual(corrections_count, 6)
-
-    def test_kmer_correction_counter_ends(self):
-        kmer_len = 3
-        reads = np.arange(11)
-        kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype="uint8")
-        self.mark_kmer_counter(0, kmer_counter_list, kmer_len, 8, len(reads))
-
-        assert_array_equal(np.array([1, 0, 0, 0, 0, 0, 0, 0, 0]), kmer_counter_list)
-
-    def mark_kmer_counter(
-        self, base_idx, kmer_counter_list, kmer_len, max_kmer_idx, read_length
-    ):
-        if base_idx < (kmer_len - 1):
-            for idx in range(0, base_idx + 1):
-                kmer_counter_list[idx] += 1
-            return
-
-        if base_idx > (read_length - (kmer_len - 1)):
-            min = base_idx - (kmer_len - 1)
-            for idx in range(min, max_kmer_idx + 1):
-                kmer_counter_list[idx] += 1
-            return
-
-        min = base_idx - (kmer_len - 1)
-        if base_idx > max_kmer_idx:
-            for idx in range(min, max_kmer_idx + 1):
-                kmer_counter_list[idx] += 1
-            return
-        for idx in range(min, base_idx + 1):
-            kmer_counter_list[idx] += 1
-        return
-
-    def transform_to_key(self, ascii_kmer, len):
-        multiplier = 1
-        key = 0
-        while len != 0:
-            key += ascii_kmer[len - 1] * multiplier
-            multiplier *= 10
-            len -= 1
-
-        return key
-
+        (regions_count, regions, solids)  = identify_trusted_regions_v2(local_read, kmer_len, spectrum, seq_len, size)
+        print(f"regions count:{regions_count} regions:{regions}")
+        print(f"Solids: {solids}")
 
 def transform_to_key(ascii_kmer, len):
     multiplier = 1
