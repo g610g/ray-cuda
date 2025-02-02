@@ -300,4 +300,21 @@ def check_solids_cardinality(solids, length):
        if solids[idx] == -1:
            return False
     return True
- 
+@cuda.jit(device=True)
+def test_copying(arr1):
+    for idx in range(5):
+        arr1[idx] = idx + 1
+
+@cuda.jit()
+def test_slice_array(arr, aux_arr_storage, arr_len):
+    threadIdx = cuda.grid(1)
+    if threadIdx <= arr_len:
+        arr1 = arr[threadIdx]
+        aux_arr = arr1[0: 5]
+
+        for i in range(5):
+            aux_arr[i] = i + 1 
+            aux_arr_storage[threadIdx][i] = aux_arr[i]
+        
+        #test_copying(arr1)
+        return

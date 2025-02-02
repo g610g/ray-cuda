@@ -3,10 +3,12 @@ import numpy as np
 from test_modules import (
     identify_trusted_regions,
     in_spectrum,
+    predeccessor_v2,
     transform_to_key,
     give_kmer_multiplicity,
     successor,
-    predeccessor
+    predeccessor,
+    copy_kmer
 
 )
 
@@ -196,7 +198,7 @@ def correct_read_one_sided_left(
             local_read[target_pos] = choosen_alternative_base
             return True
         return False
-def identify_trusted_regions_v2(local_read, kmer_len, spectrum, seq_len, size):
+def identify_trusted_regions_v2(local_read,ascii_kmer,  kmer_len, spectrum, seq_len, size):
     MAX_LEN = 300
     left_kmer, right_kmer = -1, -1 
     solid_region = False
@@ -207,7 +209,7 @@ def identify_trusted_regions_v2(local_read, kmer_len, spectrum, seq_len, size):
         solids[pos] = -1
 
     for ipos in range(size + 1):
-        ascii_kmer = local_read[ipos: ipos + kmer_len]
+        copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
         kmer = transform_to_key(ascii_kmer, kmer_len)
         if in_spectrum(spectrum, kmer):
             if not solid_region:
@@ -215,6 +217,7 @@ def identify_trusted_regions_v2(local_read, kmer_len, spectrum, seq_len, size):
                 left_kmer = right_kmer = ipos
             else:
                 right_kmer += 1
+            print(f"Marking in index {ipos} to {ipos + (kmer_len - 1)}")
             for idx in range(ipos, ipos + kmer_len):
                 solids[idx] = 1
         else:
@@ -229,42 +232,56 @@ def identify_trusted_regions_v2(local_read, kmer_len, spectrum, seq_len, size):
     print(f"Left kmer: {left_kmer} Right kmer : {right_kmer}") 
     return (regions_count, regions.copy(), solids.copy())
 
-def one_sided_v2(local_read, kmer_len, size, seq_len, spectrum, solids, bases, max_corrections):
+def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_len, spectrum, solids, bases, max_corrections, distance):
     region_indices = np.zeros((10, 2), dtype='uint16')
     regions_count = identify_trusted_regions(0, seq_len, spectrum, local_read, kmer_len, region_indices, solids)
-
+    print(solids)
+    # print(region_indices) 
     for region in range(regions_count):
         best_base = -1
         best_base_occurence = -1
         right_mer_idx = region_indices[region][1]
         last_position = -1
         num_corrections = 0
-        original_read = local_read[right_mer_idx + 1:]
-        for target_pos in range(right_mer_idx + 1, size + 1):
+
+        #copy original read first
+        copy_kmer(original_read, local_read, right_mer_idx + 1, len(local_read))
+
+        for target_pos in range(right_mer_idx + 1, seq_len):
             done = False
             spos = target_pos - (kmer_len - 1)
-            ascii_kmer = local_read[spos: target_pos + 1]
+
+            #get the ascii kmer
+            copy_kmer(ascii_kmer, local_read, spos, target_pos + 1)
             if solids[target_pos] == 1:
                 print(f"Base at base index {target_pos} is trusted")
                 break
-            (num_bases, alternative_bases) = select_mutatations(spectrum, bases, ascii_kmer, kmer_len, -1)
+            (num_bases, alternative_bases) = select_mutations(spectrum, bases, ascii_kmer, kmer_len, kmer_len - 1)
 
             #directly apply correction if mutation is equal to 1
             if num_bases == 1:
+                print(f"correction toward right index {target_pos} has one alternative base: {alternative_bases[0]}")
                 local_read[target_pos] = alternative_bases[0]
                 done = True
             else:
+                print(f"alternative bases: {alternative_bases}")
                 for idx in range(0, num_bases):
-                    if successor(kmer_len, local_read, spectrum, alternative_bases[idx], 2, spos):
-                        aux_ascii_kmer = local_read[spos: target_pos + 1]
-                        aux_ascii_kmer[-1] = alternative_bases[idx]
-                        aux_kmer = transform_to_key(aux_ascii_kmer, kmer_len)
-                        aux_occurence = give_kmer_multiplicity(spectrum, aux_kmer)
+                    if successor(kmer_len, local_read, aux_kmer, spectrum, alternative_bases[idx],spos, distance):
+                        print("successor returns true")
+                        copy_kmer(aux_kmer, local_read, spos, target_pos + 1)
+                        aux_kmer[kmer_len - 1] = alternative_bases[idx]
+                        candidate = transform_to_key(aux_kmer, kmer_len)
+                        aux_occurence = give_kmer_multiplicity(spectrum, candidate)
+
                         if aux_occurence > best_base_occurence:
                             best_base_occurence = aux_occurence
                             best_base = alternative_bases[idx]
+                    else:
+                        print("successor returns false")
                 #apply correction
+
                 if best_base_occurence != -1 and best_base != -1:
+                    print(f"{best_base} is the chosen alternative base")
                     local_read[target_pos] = best_base
                     done = True
 
@@ -275,38 +292,108 @@ def one_sided_v2(local_read, kmer_len, size, seq_len, spectrum, solids, bases, m
                     last_position = target_pos
                 if target_pos - last_position < kmer_len:
                     num_corrections += 1
-                    #revert back reads
+                    #revert back reads if corrections exceed max_corrections
                     if num_corrections > max_corrections:
-                        print(f"Reverting corrections made from index: {last_position} to index: {target_pos}")
-
+                        print(f"Reverting corrections made from index: {last_position} to index: {target_pos}, max corrections is: {max_corrections} num corrections is :{num_corrections}")
                         for pos in range(last_position, target_pos + 1):
-                            print(f"Reverting base position: {pos}")
+                            print(f"Reverting base position: {pos} to {original_read[pos - (right_mer_idx + 1)]}")
                             local_read[pos] = original_read[pos - (right_mer_idx + 1)]
                         region_indices[region][1] =  last_position - 1
+                        break
                 else:
+                    #modify original read elements right here
                     last_position = target_pos
+                    copy_kmer(original_read, local_read, last_position, len(local_read))
                     num_corrections = 0
+                
                 continue
+            print(f"Orientation to the right index: {target_pos} breaks (done == False) ")
+            print(f"best base: {best_base} best base occurence: {best_base_occurence}")
+            
             break
-    
-        #endfor rkmer_idx + 1 to size 
-        
+
+        #endfor rkmer_idx + 1 to seq_len
+
+        #for left orientation
         lkmer_idx = region_indices[region][0]
         if lkmer_idx > 0:
-
             last_position = -1
             num_corrections = 0
-            original_read = local_read[0: lkmer_idx]
+
+            #copy original read first
+            for i in range(0, lkmer_idx):
+                original_read[i] = local_read[i]
+
+            for pos in range(lkmer_idx - 1, -1, -1):
+                if solids[pos] == 1:
+                    break
+                best_base = -1
+                best_base_occurence = -1
+                done = False
+                copy_kmer(ascii_kmer, local_read, pos, pos + kmer_len)
+                (num_bases, alternative_bases) = select_mutations(spectrum, bases, ascii_kmer, kmer_len, 0)
+
+                print(f"alternative bases for left orientation index from {pos} to {pos + (kmer_len - 1)} is {alternative_bases}")
+                #apply correction 
+                if num_bases == 1:
+                    print(f"correction toward left index {pos} has one alternative base: {alternative_bases[0]}")
+                    local_read[pos] = alternative_bases[0]
+                    done = True
+                else:
+                    for idx in range(num_bases):
+                        if predeccessor_v2(kmer_len, local_read, aux_kmer, spectrum, pos, alternative_bases[idx], distance):
+                            print(f"predeccessor returns true for base {alternative_bases[idx]}")
+                            copy_kmer(aux_kmer, local_read, pos, pos + kmer_len)
+                            aux_kmer[0] = alternative_bases[idx]
+                            candidate = transform_to_key(aux_kmer, kmer_len)
+                            aux_occurence = give_kmer_multiplicity(spectrum, candidate)
+                            if aux_occurence > best_base_occurence:
+                                best_base_occurence = aux_occurence
+                                best_base = alternative_bases[idx]
+                        else:
+                            print("predeccessor returns true")
+
+                    if best_base > -1 and best_base_occurence > 0:
+                        print(f"best base is {best_base}")
+                        local_read[pos] = best_base
+                        done = True
+                #checking corrections that have done
+                if done:
+                    region_indices[region][0] = pos
+                    if last_position < 0:
+                            last_position = pos
+                    if last_position - pos < kmer_len:
+                        num_corrections += 1
+                        #revert kmer back if corrections done exceeds max_corrections
+                        if num_corrections > max_corrections:
+                            print(f"reverting corrections made from index:{pos} to index:{last_position} , max corrections is:{max_corrections} num corrections is: {num_corrections}")
+                            for base_idx in range(pos, last_position + 1):
+                                print(f"Reverting base position: {base_idx} to {original_read[base_idx]}")
+                                local_read[base_idx] = original_read[base_idx]
+                            region_indices[region][0] = last_position + 1
+                            break
+                    else:
+                        last_position = pos
+                        copy_kmer(original_read, local_read, 0, last_position + 1)
+                        num_corrections = 0
+                    continue
+                print(f"Orientation to the left index: {pos} breaks (done == False) ")
+                break
+            #endfor lkmer_idx to 0
 
     #endfor regions_count
 
-def select_mutatations(spectrum, bases, ascii_kmer, kmer_len, pos):
+
+def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos):
     num_bases = 0 
-    bases = []
+    selected_bases = []
+    original_base = ascii_kmer[pos]
     for base in bases:
         ascii_kmer[pos] = base
         candidate = transform_to_key(ascii_kmer,kmer_len)
         if in_spectrum(spectrum, candidate):
             num_bases += 1
-            bases.append(base)
-    return (num_bases, bases)
+            selected_bases.append(base)
+
+    ascii_kmer[pos] = original_base
+    return (num_bases, selected_bases)

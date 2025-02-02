@@ -1,3 +1,4 @@
+
 def in_spectrum(spectrum, target_kmer):
     for kmer in spectrum:
         if target_kmer == kmer[0]:
@@ -118,57 +119,55 @@ def predeccessor(
 
     return True
 def predeccessor_v2(
-    kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, distance
+    kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance
 ):
     print(f"predeccesor distance: {distance}")
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
+        print("ipos is zero")
         return True
     spos = max(0, ipos - distance)
 
-    counter = kmer_length - 2
+    counter = 2
+    print(f"running predecessor with base: {alternative_base} in index:")
     for idx in range(ipos - 1, spos - 1, -1):
+        print(f"from  {idx} to {idx + kmer_length}")
         if counter < kmer_length:
-            ascii_kmer = local_read[idx: idx + kmer_length]
-            ascii_kmer[counter] = alternative_base
-            candidate = transform_to_key(ascii_kmer, kmer_length)
+            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            aux_kmer[counter] = alternative_base
+            candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(candidate, kmer_spectrum):
                 return False
             counter += 1
         else:
-            ascii_kmer = local_read[idx: idx + kmer_length]
-            candidate = transform_to_key(ascii_kmer, kmer_length)
+            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(candidate, kmer_spectrum):
                 return False
-
-
+    return True
 
 def successor(
-    kmer_length, local_read, kmer_spectrum , alternative_base, max_traverse, ipos
+    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, ipos, distance, 
 ):
     seqlen = len(local_read) - ipos - 1
     offset = ipos + 1
     # edge cases
-    if seqlen < kmer_length:
+    if seqlen < kmer_length or distance <= 0:
         return True
-    end_idx = seqlen - kmer_length
+
+    end_idx = min(seqlen - kmer_length, distance - 1)
     idx = 0
-    traversed_count = 0
     counter = kmer_length - 2
-    print("running successor in index:")
+    print(f"running successor with base: {alternative_base} in index:")
     while idx <= end_idx:
-        if traversed_count >= max_traverse:
-            return True
-
         print(f"Start: {offset + idx} end: {offset + idx + kmer_length - 1}")
-        alternative_kmer = local_read[offset + idx : offset + idx + kmer_length]
-        alternative_kmer[counter] = alternative_base
-        transformed_alternative_kmer = transform_to_key(alternative_kmer, kmer_length)
-
+        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
+        aux_kmer[counter] = alternative_base
+        transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
+        print(f"alternative kmer: {transformed_alternative_kmer}")
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
         counter -= 1
-        traversed_count += 1
         idx += 1
 
     return True
@@ -197,3 +196,6 @@ def check_solids_cardinality(solids, length):
        if solids[idx] == -1:
            return False
     return True
+def copy_kmer(aux_kmer, local_read, start, end):
+    for i in range(start, end):
+        aux_kmer[i - start] = local_read[i]

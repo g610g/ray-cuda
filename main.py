@@ -1,4 +1,4 @@
-# import numpy as np
+import numpy as np
 
 # size = 3012334
 # cpus = 48
@@ -17,7 +17,5 @@
 # for idx in range(0, -1):
 #     print(idx)
 
-max_iters = 4
-for nerr in range(1, max_iters + 1):
-    max_correction = max_iters - nerr + 1
-    print(max_correction)
+arr = np.arange(1, 10, 1, dtype='uint16')
+print(arr)
