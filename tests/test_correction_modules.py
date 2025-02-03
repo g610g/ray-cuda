@@ -233,12 +233,10 @@ def identify_trusted_regions_v2(local_read,ascii_kmer,  kmer_len, spectrum, seq_
 
 def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_len, spectrum, solids, bases, max_corrections, distance):
     region_indices = np.zeros((10, 2), dtype='uint16')
-    regions_count = identify_trusted_regions(0, seq_len, spectrum, local_read, kmer_len, region_indices, solids)
+    regions_count = identify_trusted_regions( seq_len, spectrum, local_read, kmer_len, region_indices, solids, aux_kmer)
     print(solids)
     # print(region_indices) 
     for region in range(regions_count):
-        best_base = -1
-        best_base_occurence = -1
         right_mer_idx = region_indices[region][1]
         last_position = -1
         num_corrections = 0
@@ -247,6 +245,8 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
         copy_kmer(original_read, local_read, right_mer_idx + 1, len(local_read))
 
         for target_pos in range(right_mer_idx + 1, seq_len):
+            best_base = -1
+            best_base_occurence = -1
             done = False
             spos = target_pos - (kmer_len - 1)
 
@@ -264,6 +264,7 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
                 done = True
             else:
                 print(f"alternative bases: {alternative_bases}")
+                print(f"Num of alternative bases: {num_bases}")
                 for idx in range(0, num_bases):
                     if successor(kmer_len, local_read, aux_kmer, spectrum, alternative_bases[idx],spos, distance):
                         print("successor returns true")

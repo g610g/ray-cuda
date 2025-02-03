@@ -22,7 +22,7 @@ class OneSidedTests(unittest.TestCase):
     def test_one_sided_v2(self):
         MAX_LEN = 300
 
-        local_read = np.array([3, 2, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2, 1, 3, 2, 1], dtype='uint8')
+        local_read = np.array([3, 2, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 4, 1, 2, 3, 4, 2, 2, 1, 3, 2, 1], dtype='uint8')
         original_read = np.zeros(MAX_LEN, dtype='uint8')
         correct_read = local_read.copy()
         kmer_length = 13

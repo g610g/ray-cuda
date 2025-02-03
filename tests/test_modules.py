@@ -1,4 +1,5 @@
 
+
 def in_spectrum(spectrum, target_kmer):
     for kmer in spectrum:
         if target_kmer == kmer[0]:
@@ -23,14 +24,11 @@ def transform_to_key(ascii_kmer, len):
     return key
 
 
-def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids):
-    length = end - start
-    endpos = length - (kmer_len - 1)
-
-    for idx in range(0, endpos):
-        ascii_kmer = local_reads[idx : idx + kmer_len]
-
-        curr_kmer = transform_to_key(ascii_kmer, kmer_len)
+def identify_solid_bases(local_read, kmer_len, kmer_spectrum, solids, size, aux_kmer):
+    
+    for idx in range(0, size + 1):
+        copy_kmer(aux_kmer, local_read, idx, idx + kmer_len)
+        curr_kmer = transform_to_key(aux_kmer, kmer_len)
 
         # set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
@@ -38,18 +36,17 @@ def identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solid
 
 
 def identify_trusted_regions(
-    start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids
+    seq_len, kmer_spectrum, local_reads, kmer_len, region_indices, solids, aux_kmer
 ):
-
-    identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids)
-
+    size = seq_len - kmer_len
+    identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, size, aux_kmer)
     current_indices_idx = 0
     base_count = 0
     region_start = 0
     region_end = 0
 
     # idx will be a relative index
-    for idx in range(end - start):
+    for idx in range(seq_len):
 
         # a trusted region has been found. Append it into the identified regions
         if base_count >= kmer_len and solids[idx] == -1:

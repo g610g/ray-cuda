@@ -139,13 +139,13 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     )
 
     # voting refinement is done within the one_sided_kernel
-    # one_sided_kernel[bpg, tbp](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    #     not_corrected_counter,
-    # )
+    one_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+        not_corrected_counter,
+    )
 
     # calculates the solidity of kmer after two sided correction
     # calculate_reads_solidity[bpg, tbp](

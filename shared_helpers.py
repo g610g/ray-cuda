@@ -35,10 +35,10 @@ def identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, ascii_kme
 
 @cuda.jit(device=True)
 def identify_trusted_regions(
-    start, end, kmer_spectrum, local_reads, kmer_len, region_indices, solids
+    seq_len, kmer_spectrum, local_reads, kmer_len, region_indices, solids, aux_kmer, size
 ):
 
-    identify_solid_bases(local_reads, start, end, kmer_len, kmer_spectrum, solids)
+    identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, aux_kmer, size)
 
     current_indices_idx = 0
     base_count = 0
@@ -46,7 +46,7 @@ def identify_trusted_regions(
     region_end = 0
 
     # idx will be a relative index
-    for idx in range(end - start):
+    for idx in range(seq_len):
 
         # a trusted region has been found. Append it into the identified regions
         if base_count >= kmer_len and solids[idx] == -1:
@@ -81,7 +81,6 @@ def identify_trusted_regions(
 
     # this will be the length or the number of trusted regions
     return current_indices_idx
-
 
 @cuda.jit(device=True)
 def to_local_reads(reads_1d, local_reads, start, end):
@@ -374,10 +373,12 @@ def test_slice_array(arr, aux_arr_storage, arr_len):
 def copy_kmer(aux_kmer, local_read, start, end):
     if end  > len(local_read):
         return -1
+
     for i in range(start, end):
         aux_kmer[i - start] = local_read[i]
     return 1
-cuda.jit(device=True)
+
+@cuda.jit(device=True)
 def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases):
     num_bases = 0 
     original_base = ascii_kmer[pos]
@@ -389,4 +390,5 @@ def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases)
             num_bases += 1
 
     ascii_kmer[pos] = original_base
+
     return num_bases
