@@ -118,13 +118,14 @@ def predeccessor(
         traversed_count += 1
 
     return True
+#why not start checking at the predecessor one step behind?
 def predeccessor_v2(
     kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance
 ):
     print(f"predeccesor distance: {distance}")
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
-        print("ipos is zero")
+        print("ipos is zero the kmer has no neighbors")
         return True
     spos = max(0, ipos - distance)
 
@@ -136,14 +137,15 @@ def predeccessor_v2(
             copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
-            if not in_spectrum(candidate, kmer_spectrum):
+            if not in_spectrum(kmer_spectrum, candidate):
                 return False
             counter += 1
         else:
             copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
             candidate = transform_to_key(aux_kmer, kmer_length)
-            if not in_spectrum(candidate, kmer_spectrum):
+            if not in_spectrum(kmer_spectrum, candidate):
                 return False
+            counter += 1
     return True
 
 def successor(
@@ -173,21 +175,32 @@ def successor(
     return True
 
 
+#for testing purposes
+def generate_and_return_kmers(read, kmer_length , size):
+    spectrum = []
+    for idx in range(0, size + 1):
+        spectrum.append(transform_to_key(read[idx : idx + kmer_length], kmer_length))
+    return spectrum.copy()
+
 def generate_kmers(read, kmer_length, kmer_spectrum):
     for idx in range(0, len(read) - (kmer_length - 1)):
         kmer_spectrum.append(
             transform_to_key(read[idx : idx + kmer_length], kmer_length)
         )
 
-
 def count_occurence(spectrum):
     new_spectrum = []
+    existed = []
     for kmer in spectrum:
         occurence = 0
-        for inner_kmer in spectrum:
-            if kmer == inner_kmer:
-                occurence += 1
+        if not kmer in existed:
+            for inner_kmer in spectrum:
+                if kmer == inner_kmer:
+                    occurence += 1
+        else:
+            continue
         new_spectrum.append([kmer, occurence])
+        existed.append(kmer)
 
     return new_spectrum.copy()
 
@@ -196,6 +209,11 @@ def check_solids_cardinality(solids, length):
        if solids[idx] == -1:
            return False
     return True
+
+#copies bases into aux kmer as long as end is not > seqlen
 def copy_kmer(aux_kmer, local_read, start, end):
+    if end  > len(local_read):
+        return -1
     for i in range(start, end):
         aux_kmer[i - start] = local_read[i]
+    return 1

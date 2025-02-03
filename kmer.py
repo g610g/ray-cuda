@@ -105,8 +105,3 @@ def calculatecutoff_threshold(occurence_data, bin):
     return math.ceil(bin_centers[min_density_idx])
 
 
-# def manual_histogram_calculation(occurence_data, max_multiplicity, min_multiplicity):
-#
-#     multiplicities = list(range(min_multiplicity, max_multiplicity))
-#     for occurence in occurence_data:
-#        pass

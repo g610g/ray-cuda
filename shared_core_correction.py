@@ -1,16 +1,22 @@
+from numpy import select
 from numba import cuda
 from shared_helpers import (
     identify_solid_bases,
     identify_trusted_regions,
     predeccessor,
+    predeccessor_v2,
     successor,
-    check_solids_cardinality
+    successor_v2,
+    check_solids_cardinality,
+    copy_kmer,
+    select_mutations
+
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
 
 
 @cuda.jit(device=True)
-def cast_votes(local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum):
+def cast_votes(local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum, ascii_kmer):
     #reset voting matrix
     for i in range(seq_len):
         for j in range(len(bases)):
@@ -18,10 +24,10 @@ def cast_votes(local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum):
     max_vote = 0
     #check each kmer within the read (planning to put the checking of max vote within this iteration)
     for ipos in range(0, size + 1):
-        
-        ascii_kmer = local_read[ipos: ipos + kmer_len]
+
+        copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
         kmer = transform_to_key(ascii_kmer, kmer_len)
-        if  in_spectrum(kmer_spectrum, kmer):
+        if in_spectrum(kmer_spectrum, kmer):
             continue
         for base_idx in range(kmer_len):
             original_base = ascii_kmer[base_idx]
@@ -47,7 +53,6 @@ def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
     for ipos in range(seq_len):
         alternative_base = -1
         for base_idx in range(len(bases)):
-            #why does it have to be equal?
             if vm[ipos][base_idx] == max_vote:
                 if alternative_base == -1:
                     alternative_base = base_idx + 1
@@ -56,7 +61,6 @@ def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
         #apply the base correction if we have found an alternative base
         if alternative_base >= 1:
             local_read[ipos] = alternative_base
-
 
 @cuda.jit
 def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
@@ -68,26 +72,32 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
         # find the read assigned to this thread
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         MAX_LEN = 300
+        KMER_LEN = 13
         bases = cuda.local.array(4, dtype="uint8")
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         local_reads = cuda.local.array(300, dtype="uint8")
         rpossible_base_mutations = cuda.local.array(10,dtype='uint8')
         lpossible_base_mutations = cuda.local.array(10,dtype='uint8')
-        size = (end - start)  - kmer_len
+        aux_kmer = cuda.local.array(KMER_LEN, dtype='uint8')
+        ascii_kmer = cuda.local.array(KMER_LEN, dtype='uint8')
+        seqlen = end - start
+        size = seqlen - kmer_len
+
+        #this should be a terminal argument
         max_iters = 2
         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
         for idx in range(0, end - start):
             local_reads[idx] = reads[idx + start]
+
         for i in range(4):
             bases[i] = i + 1
 
         for _ in range(max_iters):
-            num_corrections = correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_reads, lpossible_base_mutations, rpossible_base_mutations, size)
-            
+            num_corrections = correct_two_sided(end, start, seqlen, kmer_spectrum, ascii_kmer, aux_kmer,  kmer_len, bases, solids, local_reads, lpossible_base_mutations, rpossible_base_mutations, size)
             #this read is error free. Stop correction
             if num_corrections == 0:
                 return
-            
+
             #this read has more one than error within a kmer. Pass the read to one sided correction
             if num_corrections < 0:
                 break
@@ -97,28 +107,28 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
             reads[idx + start] = local_reads[idx]
 
 @cuda.jit(device=True)
-def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size):
+def correct_two_sided(end, start, seqlen, kmer_spectrum, ascii_kmer, aux_kmer,  kmer_len, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size):
     for i in range(end - start):
         solids[i] = -1
 
     # identify whether base is solid or not
     identify_solid_bases(
-        local_read, start, end, kmer_len, kmer_spectrum, solids
+        local_read, kmer_len, kmer_spectrum, solids, ascii_kmer, size
     )
     #check whether solids array does not contain -1, return 0 if yes
-    if check_solids_cardinality(solids, end - start):
+    if check_solids_cardinality(solids, seqlen):
         return 0
 
     klen_idx = kmer_len - 1
     for ipos in range(0, size + 1):
         lpos = 0
         if ipos >= 0:
-            rkmer = local_read[ipos: ipos + kmer_len] 
+            copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
         if ipos >= kmer_len:
-            lkmer = local_read[ipos - klen_idx: ipos + 1]
-            lpos = -1
+            copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
+            lpos = klen_idx
         else: 
-            lkmer = local_read[0: kmer_len]
+            copy_kmer(aux_kmer, local_read, 0, kmer_len)
             lpos = ipos
         #trusted base
         if solids[ipos] == 1:
@@ -129,8 +139,8 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
         #select all possible mutations for rkmer
         rnum_bases = 0
         for base in bases:
-            rkmer[0] = base
-            candidate_kmer = transform_to_key(rkmer, kmer_len)
+            ascii_kmer[0] = base
+            candidate_kmer = transform_to_key(ascii_kmer, kmer_len)
             if in_spectrum(kmer_spectrum, candidate_kmer):
                 rpossible_base_mutations[rnum_bases] = base
                 rnum_bases += 1 
@@ -138,8 +148,8 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
         #select all possible mutations for lkmer
         lnum_bases = 0
         for base in bases:
-            lkmer[lpos] = base
-            candidate_kmer = transform_to_key(lkmer, kmer_len)
+            aux_kmer[lpos] = base
+            candidate_kmer = transform_to_key(aux_kmer, kmer_len)
             if in_spectrum(kmer_spectrum, candidate_kmer):
                 lpossible_base_mutations[lnum_bases] = base
                 lnum_bases += 1
@@ -163,29 +173,28 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
             local_read[ipos] = potential_base
             return 1
         
-    
     #endfor  0 < seqlen - klen
     
     #for bases > seqlen - klen)
 
     
-    for ipos in range(size + 1, end - start):
-        rkmer = local_read[size:]
-        lkmer = local_read[ipos - klen_idx: ipos + 1]
+    for ipos in range(size + 1, seqlen):
+        copy_kmer(ascii_kmer, local_read, size, seqlen)
+        copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
         if solids[ipos] == 1:
             continue
         #select mutations for right kmer
         rnum_bases  = 0
         for base in bases:
-            rkmer[ipos - size] = base
-            candidate_kmer = transform_to_key(rkmer, kmer_len)
+            ascii_kmer[ipos - size] = base
+            candidate_kmer = transform_to_key(ascii_kmer, kmer_len)
             if in_spectrum(kmer_spectrum, candidate_kmer):
                 rpossible_base_mutations[rnum_bases] = base
                 rnum_bases += 1
         lnum_bases = 0
         for base in bases:
-            lkmer[-1] = base
-            candidate_kmer = transform_to_key(lkmer, kmer_len)
+            aux_kmer[klen_idx]= base
+            candidate_kmer = transform_to_key(aux_kmer, kmer_len)
             if in_spectrum(kmer_spectrum, candidate_kmer):
                 lpossible_base_mutations[lnum_bases] = base
                 lnum_bases += 1
@@ -207,7 +216,6 @@ def correct_two_sided(end, start, kmer_spectrum, kmer_len, bases, solids, local_
         if num_corrections == 1 and potential_base != -1:
             local_read[ipos] = potential_base
             return 1
-        
     return -1
 
 @cuda.jit()
@@ -222,19 +230,22 @@ def one_sided_kernel(
     if threadIdx < offsets.shape[0]:
 
         MAX_LEN = 300
-
+        DEFAULT_KMER_LEN = 13
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         solids = cuda.local.array(MAX_LEN, dtype="int8")
-        alternatives = cuda.local.array((4, 2), dtype="uint32")
-        corrected_solids = cuda.local.array(MAX_LEN, dtype="int8")
         region_indices = cuda.local.array((10, 2), dtype="int8")
+        original_read = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         original_read = cuda.local.array(MAX_LEN, dtype="uint8")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint16")
+        selected_bases = cuda.local.array(4 , dtype="uint16")
+        aux_kmer = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint16")
+        aux_kmer2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint16")
         # number of kmers generated base on the length of reads and kmer
       
         maxIters = 4
         min_vote = 3
+        seqlen = end - start
 
         bases = cuda.local.array(4, dtype="uint8")
 
@@ -250,213 +261,15 @@ def one_sided_kernel(
         for nerr in range(1, maxIters + 1):
             max_correction = maxIters - nerr + 1
             for _ in range(2):
-                for i in range(end - start):
-                    solids[i] = -1
+                
+                #reset solids every before run of onesided
+                for idx in range(seqlen):
+                    solids[idx] = -1
 
-                # used for debugging
-                for i in range(end - start):
-                    corrected_solids[i] = -1
+                one_sided_v2(local_read, original_read, aux_kmer, aux_kmer2, region_indices, selected_bases, kmer_len, seqlen, kmer_spectrum, solids, bases, nerr, max_correction)
+                        #start voting refinement here
 
-                # identifies trusted regions in this read
-                regions_count = identify_trusted_regions(
-                    start, end, kmer_spectrum, local_read, kmer_len, region_indices, solids
-                )
-
-                # zero regions count means no trusted region in this read
-                if regions_count == 0:
-                    return
-                # for reads that has no error 
-                if regions_count == 1 and region_indices[0][0] == 0 and region_indices[0][1] == 99:
-                    return
-
-                for region in range(regions_count):
-                    # 1. goes toward right orientation
-
-                    # there is no next region
-                    if region == (regions_count - 1):
-                        region_end = region_indices[region][1]
-                        original_region_end = region_end
-                        corrections_count = 0
-                        last_position = -1
-                        original_bases = local_read[region_end + 1 :]
-                        # while we are not at the end base of the read
-                        while region_end != (end - start) - 1:
-                            target_pos = region_end + 1
-                            # keep track the number of corrections made here
-                            if not correct_read_one_sided_right(
-                                local_read,
-                                region_end,
-                                kmer_spectrum,
-                                kmer_len,
-                                bases,
-                                alternatives,
-                            ):
-                                not_corrected_counter[threadIdx] += 1
-                                break
-
-                            # extend the portion of region end for successful correction and check the number of corrections done
-                            else:
-                                if last_position < 0:
-                                    last_position = target_pos
-                                if target_pos - last_position < kmer_len:
-                                    corrections_count += 1
-
-                                    # revert back bases from last position to target position and revert region
-                                    # prevents cumulative incorrect corrections
-                                    if corrections_count > max_correction:
-                                        for pos in range(last_position, target_pos + 1):
-                                            local_read[pos] = original_bases[
-                                                pos - last_position
-                                            ]
-                                        region_indices[region][1] = original_region_end
-                                        break
-                                    region_end += 1
-                                    region_indices[region][1] = target_pos
-                                # recalculate the last position 
-                                else:
-                                    last_position = target_pos
-                                    original_region_end = target_pos
-                                    corrections_count = 0
-                                    region_end += 1
-                                    region_indices[region][1] = target_pos
-
-                    # there is a next region
-                    elif region != (regions_count - 1):
-                        region_end = region_indices[region][1]
-                        original_region_end = region_end
-                        next_region_start = region_indices[region + 1][0]
-                        original_bases = local_read[region_end + 1 :]
-                        last_position = -1
-                        corrections_count = 0
-                        # the loop will not stop until it does not find another region
-                        while region_end != (next_region_start - 1):
-                            target_pos = region_end + 1
-                            if not correct_read_one_sided_right(
-                                local_read,
-                                region_end,
-                                kmer_spectrum,
-                                kmer_len,
-                                bases,
-                                alternatives,
-                            ):
-                                # fails to correct this region and on this orientation
-                                not_corrected_counter[threadIdx] += 1
-                                break
-
-                            # extend the portion of region end for successful correction
-                            else:
-
-                                if last_position < 0:
-                                    last_position = target_pos
-                                if target_pos - last_position < kmer_len:
-                                    corrections_count += 1
-
-                                    # revert back bases from last position to target position and stop correction for this region oritentation
-                                    if corrections_count > max_correction:
-                                        for pos in range(last_position, target_pos + 1):
-                                            local_read[pos] = original_bases[
-                                                pos - last_position
-                                            ]
-                                        region_indices[region][1] = original_region_end
-                                        break
-                                    region_end += 1
-                                    region_indices[region][1] = target_pos
-
-                                # recalculate the last position and reset corrections made
-                                else:
-                                    last_position = target_pos
-                                    original_region_end = target_pos
-                                    corrections_count = 0
-                                    region_end += 1
-                                    region_indices[region][1] = target_pos
-
-                    # 2. Orientation going to the left 
-                    # leftmost region
-                    if region == 0:
-                        region_start = region_indices[region][0]
-                        original_region_start = region_start
-                        last_position = -1
-                        corrections_count = 0
-                        original_bases = local_read[0 : region_start + 1]
-
-                        # while we are not at the first base of the read
-                        while region_start > 0:
-                            target_pos = region_start - 1
-                            if not correct_read_one_sided_left(
-                                local_read,
-                                region_start,
-                                kmer_spectrum,
-                                kmer_len,
-                                bases,
-                                alternatives,
-                            ):
-                                not_corrected_counter[threadIdx] += 1
-                                break
-                            else:
-                                if last_position < 0:
-                                    last_position = target_pos
-                                if last_position - target_pos < kmer_len:
-                                    corrections_count += 1
-                                    # revert back bases
-                                    if corrections_count > max_correction:
-                                        for pos in range(target_pos, last_position + 1):
-                                            local_read[pos] = original_bases[pos]
-                                        region_indices[region][0] = original_region_start
-                                        break
-                                    region_start -= 1
-                                    region_indices[region][0] = region_start
-                                else:
-                                    last_position = target_pos
-                                    original_region_start = target_pos
-                                    corrections_count = 0
-                                    region_start = target_pos
-                                    region_indices[region][0] = region_start
-
-                    # there is another region in the left side of this region
-                    elif region > 0:
-                        region_start, prev_region_end = (
-                            region_indices[region][0],
-                            region_indices[region - 1][1],
-                        )
-                        original_region_start = region_start
-                        last_position = -1
-                        corrections_count = 0
-                        original_bases = local_read[0 : region_start + 1]
-
-                        while region_start - 1 > (prev_region_end):
-                            target_pos = region_start - 1
-                            if not correct_read_one_sided_left(
-                                local_read,
-                                region_start,
-                                kmer_spectrum,
-                                kmer_len,
-                                bases,
-                                alternatives,
-                            ):
-                                not_corrected_counter[threadIdx] += 1
-                                break
-                            else:
-                                if last_position < 0:
-                                    last_position = target_pos
-                                if last_position - target_pos < kmer_len:
-                                    corrections_count += 1
-                                    # revert back bases
-                                    if corrections_count > max_correction:
-                                        for pos in range(target_pos, last_position + 1):
-                                            local_read[pos] = original_bases[pos]
-                                        region_indices[region][0] = original_region_start
-                                        break
-                                    region_start -= 1
-                                    region_indices[region][0] = region_start
-                                else:
-                                    last_position = target_pos
-                                    original_region_start = target_pos
-                                    corrections_count = 0
-                                    region_start -= 1
-                                    region_indices[region][0] = region_start
-
-            #start voting refinement here
-            max_vote = cast_votes(local_read, voting_matrix, end - start, kmer_len, bases, (end - start) - kmer_len, kmer_spectrum)
+            max_vote = cast_votes(local_read, voting_matrix, end - start, kmer_len, bases, (end - start) - kmer_len, kmer_spectrum,aux_kmer)
             
             #the read is error free at this point
             if max_vote == 0:
@@ -606,4 +419,149 @@ def correct_read_one_sided_left(
             local_read[target_pos] = choosen_alternative_base
             return True
         return False
+@cuda.jit(device=True)
+def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, region_indices, selected_bases, kmer_len, seq_len, spectrum, solids, bases, max_corrections, distance):
+    regions_count = identify_trusted_regions(0, seq_len, spectrum, local_read, kmer_len, region_indices, solids)
+    
+    #check -1 cardinality and return true if cardinality is == 0
 
+    for region in range(regions_count):
+        best_base = -1
+        best_base_occurence = -1
+        right_mer_idx = region_indices[region][1]
+        last_position = -1
+        num_corrections = 0
+
+        #copy original read first
+        copy_kmer(original_read, local_read, right_mer_idx + 1, seq_len)
+
+        for target_pos in range(right_mer_idx + 1, seq_len):
+            done = False
+            spos = target_pos - (kmer_len - 1)
+
+            #get the ascii kmer
+            copy_kmer(ascii_kmer, local_read, spos, target_pos + 1)
+            if solids[target_pos] == 1:
+                break
+            num_bases = select_mutations(spectrum, bases, ascii_kmer, kmer_len, kmer_len - 1, selected_bases)
+
+            #directly apply correction if mutation is equal to 1
+            if num_bases == 1:
+                #print(f"correction toward right index {target_pos} has one alternative base: {alternative_bases[0]}")
+                local_read[target_pos] = selected_bases[0]
+                done = True
+            else:
+                #print(f"alternative bases: {alternative_bases}")
+                for idx in range(0, num_bases):
+                    if successor_v2(kmer_len, local_read, aux_kmer, spectrum, selected_bases[idx] ,spos, distance):
+                        #print("successor returns true")
+                        copy_kmer(aux_kmer, local_read, spos, target_pos + 1)
+                        aux_kmer[kmer_len - 1] = selected_bases[idx]
+                        candidate = transform_to_key(aux_kmer, kmer_len)
+                        aux_occurence = give_kmer_multiplicity(spectrum, candidate)
+
+                        if aux_occurence > best_base_occurence:
+                            best_base_occurence = aux_occurence
+                            best_base = selected_bases[idx]
+
+                #apply correction
+                if best_base_occurence != -1 and best_base != -1:
+                    #print(f"{best_base} is the chosen alternative base")
+                    local_read[target_pos] = best_base
+                    done = True
+
+            #check how many corrections is done and extend the region index
+            if done:
+                region_indices[region][1] = target_pos
+                if last_position < 0:
+                    last_position = target_pos
+                if target_pos - last_position < kmer_len:
+                    num_corrections += 1
+                    #revert back reads if corrections exceed max_corrections
+                    if num_corrections > max_corrections:
+                        #print(f"Reverting corrections made from index: {last_position} to index: {target_pos}, max corrections is: {max_corrections} num corrections is :{num_corrections}")
+                        for pos in range(last_position, target_pos + 1):
+                            #print(f"Reverting base position: {pos} to {original_read[pos - (right_mer_idx + 1)]}")
+                            local_read[pos] = original_read[pos - (right_mer_idx + 1)]
+                        region_indices[region][1] =  last_position - 1
+                        break
+                        #break correction for this orientation after reverting back kmers
+                else:
+                    #modify original read elements right here
+                    last_position = target_pos
+                    copy_kmer(original_read, local_read, last_position, seq_len)
+                    num_corrections = 0
+
+                continue
+
+            #break correction if done is False
+            break
+
+        #endfor rkmer_idx + 1 to seq_len
+
+        #for left orientation
+        lkmer_idx = region_indices[region][0]
+        if lkmer_idx > 0:
+            last_position = -1
+            num_corrections = 0
+
+            #copy original read first
+            copy_kmer(original_read, local_read, 0, lkmer_idx)
+
+            for pos in range(lkmer_idx - 1, -1, -1):
+                
+                #the current base is trusted
+                if solids[pos] == 1:
+                    break
+                best_base = -1
+                best_base_occurence = -1
+                done = False
+                copy_kmer(ascii_kmer, local_read, pos, pos + kmer_len)
+                num_bases = select_mutations(spectrum, bases, ascii_kmer, kmer_len, 0, selected_bases)
+
+                # print(f"alternative bases for left orientation index from {pos} to {pos + (kmer_len - 1)} is {alternative_bases}")
+                # apply correction 
+                if num_bases == 1:
+                    #print(f"correction toward left index {pos} has one alternative base: {alternative_bases[0]}")
+                    local_read[pos] = selected_bases[0]
+                    done = True
+                else:
+                    for idx in range(num_bases):
+                        if predeccessor_v2(kmer_len, local_read, aux_kmer, spectrum, pos, selected_bases[idx], distance):
+                            #print(f"predeccessor returns true for base {alternative_bases[idx]}")
+                            copy_kmer(aux_kmer, local_read, pos, pos + kmer_len)
+                            aux_kmer[0] = selected_bases[idx]
+                            candidate = transform_to_key(aux_kmer, kmer_len)
+                            aux_occurence = give_kmer_multiplicity(spectrum, candidate)
+                            if aux_occurence > best_base_occurence:
+                                best_base_occurence = aux_occurence
+                                best_base = selected_bases[idx]
+
+                    if best_base > -1 and best_base_occurence > 0:
+                        local_read[pos] = best_base
+                        done = True
+                #checking corrections that have done
+                if done:
+                    region_indices[region][0] = pos
+                    if last_position < 0:
+                            last_position = pos
+                    if last_position - pos < kmer_len:
+                        num_corrections += 1
+
+                        #revert kmer back if corrections done exceeds max_corrections
+                        if num_corrections > max_corrections:
+                            for base_idx in range(pos, last_position + 1):
+                                local_read[base_idx] = original_read[base_idx]
+                            region_indices[region][0] = last_position + 1
+                            break
+                    else:
+                        last_position = pos
+                        copy_kmer(original_read, local_read, 0, last_position + 1)
+                        num_corrections = 0
+                    continue
+
+                #the correction for the current base is done == False
+                break
+            #endfor lkmer_idx to 0
+
+    #endfor regions_count

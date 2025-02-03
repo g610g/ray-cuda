@@ -1,4 +1,3 @@
-from numba.cuda import target
 import numpy as np
 from test_modules import (
     identify_trusted_regions,
@@ -278,14 +277,14 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
                             best_base = alternative_bases[idx]
                     else:
                         print("successor returns false")
-                #apply correction
 
+                #apply correction
                 if best_base_occurence != -1 and best_base != -1:
                     print(f"{best_base} is the chosen alternative base")
                     local_read[target_pos] = best_base
                     done = True
 
-            #check how many corrections is done
+            #check how many corrections is done and extend the region index
             if done:
                 region_indices[region][1] = target_pos
                 if last_position < 0:
@@ -300,16 +299,18 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
                             local_read[pos] = original_read[pos - (right_mer_idx + 1)]
                         region_indices[region][1] =  last_position - 1
                         break
+                        #break correction for this orientation after reverting back kmers
                 else:
                     #modify original read elements right here
                     last_position = target_pos
                     copy_kmer(original_read, local_read, last_position, len(local_read))
                     num_corrections = 0
-                
+
                 continue
             print(f"Orientation to the right index: {target_pos} breaks (done == False) ")
             print(f"best base: {best_base} best base occurence: {best_base_occurence}")
             
+            #break correction if done is False
             break
 
         #endfor rkmer_idx + 1 to seq_len
@@ -321,10 +322,11 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
             num_corrections = 0
 
             #copy original read first
-            for i in range(0, lkmer_idx):
-                original_read[i] = local_read[i]
+            copy_kmer(original_read, local_read, 0, lkmer_idx)
 
             for pos in range(lkmer_idx - 1, -1, -1):
+                
+                #the current base is trusted
                 if solids[pos] == 1:
                     break
                 best_base = -1
@@ -351,7 +353,7 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
                                 best_base_occurence = aux_occurence
                                 best_base = alternative_bases[idx]
                         else:
-                            print("predeccessor returns true")
+                            print("predeccessor returns False")
 
                     if best_base > -1 and best_base_occurence > 0:
                         print(f"best base is {best_base}")
@@ -377,6 +379,8 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, kmer_len,seq_l
                         copy_kmer(original_read, local_read, 0, last_position + 1)
                         num_corrections = 0
                     continue
+
+                #the correction for the current base is done == False
                 print(f"Orientation to the left index: {pos} breaks (done == False) ")
                 break
             #endfor lkmer_idx to 0
