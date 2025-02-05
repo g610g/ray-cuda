@@ -1,5 +1,7 @@
 
 
+
+
 def in_spectrum(spectrum, target_kmer):
     for kmer in spectrum:
         if target_kmer == kmer[0]:
@@ -124,6 +126,7 @@ def predeccessor_v2(
     if ipos <= 0 or distance <= 0:
         print("ipos is zero the kmer has no neighbors")
         return True
+    backward_base(aux_kmer, local_read[ipos], kmer_length)
     spos = max(0, ipos - distance)
 
     counter = 2
@@ -131,14 +134,15 @@ def predeccessor_v2(
     for idx in range(ipos - 1, spos - 1, -1):
         print(f"from  {idx} to {idx + kmer_length}")
         if counter < kmer_length:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
             counter += 1
         else:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            #copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
@@ -146,10 +150,10 @@ def predeccessor_v2(
     return True
 
 def successor(
-    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, ipos, distance, 
+    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, spos, distance, 
 ):
-    seqlen = len(local_read) - ipos - 1
-    offset = ipos + 1
+    seqlen = len(local_read) - spos - 1
+    offset = spos + 1
     # edge cases
     if seqlen < kmer_length or distance <= 0:
         return True
@@ -160,7 +164,7 @@ def successor(
     print(f"running successor with base: {alternative_base} in index:")
     while idx <= end_idx:
         print(f"Start: {offset + idx} end: {offset + idx + kmer_length - 1}")
-        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
+        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
         print(f"alternative kmer: {transformed_alternative_kmer}")
@@ -214,3 +218,18 @@ def copy_kmer(aux_kmer, local_read, start, end):
     for i in range(start, end):
         aux_kmer[i - start] = local_read[i]
     return 1
+
+#backward the base or shifts bases to the left
+def backward_base(ascii_kmer, base, kmer_length):
+    for idx in range(kmer_length  - 1, -1 , -1):
+        if idx == 0:
+            ascii_kmer[0] = base
+        else:
+            ascii_kmer[idx] = ascii_kmer[idx - 1]
+#forward the base or shifts bases to the right
+def forward_base(ascii_kmer, base, kmer_length):
+    for idx in range(kmer_length):
+        if idx == (kmer_length - 1):
+            ascii_kmer[kmer_length - 1] = base
+        else:
+            ascii_kmer[idx] = ascii_kmer[idx + 1]

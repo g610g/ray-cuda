@@ -1,14 +1,14 @@
 import unittest
 import numpy as np
-from numpy import random
-from test_modules import generate_kmers, identify_solid_bases, in_spectrum, transform_to_key, count_occurence, check_solids_cardinality
-from test_correction_modules import correct_reads_two_sided
+from test_modules import copy_kmer, generate_kmers, identify_solid_bases, in_spectrum, transform_to_key, count_occurence, check_solids_cardinality
+from test_correction_modules import select_mutations
 from numpy.testing import assert_array_equal
 
 
 class TwoSidedTest(unittest.TestCase):
     def test_correcting_edge_bases(self):
         MAX_LEN = 300
+        DEFAULT_KMER_LEN = 13
         spectrum = []
         kmer_length = 4
         # local_read = random.randint(1, 4, 100, dtype="uint8")
@@ -19,8 +19,10 @@ class TwoSidedTest(unittest.TestCase):
         solids = np.zeros(MAX_LEN, dtype="int8")
         rpossible_base_mutations = np.zeros(10, dtype='uint8')
         lpossible_base_mutations = np.zeros(10, dtype='uint8')
-
-        size = (end - start)  - kmer_length
+        aux_kmer1 = np.zeros(DEFAULT_KMER_LEN, dtype='uint8')
+        aux_kmer2 = np.zeros(DEFAULT_KMER_LEN, dtype='uint8')
+        seqlen = end - start
+        size = seqlen - kmer_length
         max_iters = 2
         # seeding solids with -1s
         for idx in range(len(local_read)):
@@ -43,7 +45,7 @@ class TwoSidedTest(unittest.TestCase):
         print(spectrum)
         
         for idx in range(max_iters):
-            num_corrections = self.correct_core_two_sided(end, start, spectrum, kmer_length, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size)
+            num_corrections = self.correct_core_two_sided(aux_kmer1, aux_kmer2, seqlen, spectrum, kmer_length, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size)
             if num_corrections == 0:
                 print(f"The read is already deemed to be not erroneous at iter index: {idx}")
             elif num_corrections == -1:
@@ -51,16 +53,16 @@ class TwoSidedTest(unittest.TestCase):
             elif num_corrections == 1:
                 print(f"A successful correction is done within the read at iter index: {idx}")
         assert_array_equal(local_read, original_read)
-    def correct_core_two_sided(self, end, start, kmer_spectrum, kmer_len, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size):
-        for i in range(end - start):
+    def correct_core_two_sided(self, ascii_kmer, aux_kmer, seqlen, kmer_spectrum, kmer_len, bases, solids, local_read, lpossible_base_mutations, rpossible_base_mutations, size):
+        for i in range(seqlen):
             solids[i] = -1
 
         # identify whether base is solid or not
         identify_solid_bases(
-            local_read, start, end, kmer_len, kmer_spectrum, solids
+            local_read, kmer_len, kmer_spectrum, solids, seqlen - kmer_len, aux_kmer
         )
         #check whether solids array does not contain -1, return 0 if yes
-        if check_solids_cardinality(solids, end - start):
+        if check_solids_cardinality(solids, seqlen):
             return 0
 
         klen_idx = kmer_len - 1
@@ -72,36 +74,19 @@ class TwoSidedTest(unittest.TestCase):
                 continue
 
             if ipos >= 0:
-                rkmer = local_read[ipos: ipos + kmer_len] 
+                copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
             if ipos >= kmer_len:
-                lkmer = local_read[ipos - klen_idx: ipos + 1]
+                copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
                 lpos = -1
             else: 
-                lkmer = local_read[0: kmer_len]
+                copy_kmer(aux_kmer, local_read, 0, kmer_len)
                 lpos = ipos
-        
             
             #select all possible mutations for rkmer
-            rnum_bases = 0
-            for base in bases:
-                rkmer[0] = base
-                candidate_kmer = transform_to_key(rkmer, kmer_len)
-                print(f"Right kmer: {candidate_kmer} in ipos: {ipos}")
-                if in_spectrum(kmer_spectrum, candidate_kmer):
-                    rpossible_base_mutations[rnum_bases] = base
-                    print(f"Yeey its in spectrum,  Right Kmer: {candidate_kmer} in pos {ipos}")
-                    rnum_bases += 1 
+            (rnum_bases, _) = select_mutations(kmer_spectrum, bases, ascii_kmer, kmer_len, 0)
                 
             #select all possible mutations for lkmer
-            lnum_bases = 0
-            for base in bases:
-                lkmer[lpos] = base
-                candidate_kmer = transform_to_key(lkmer, kmer_len)
-                print(f"Left kmer: {candidate_kmer} in ipos: {ipos}")
-                if in_spectrum(kmer_spectrum, candidate_kmer):
-                    lpossible_base_mutations[lnum_bases] = base
-                    print(f"Yeey its in spectrum,  Left Kmer: {candidate_kmer} in pos {ipos}")
-                    lnum_bases += 1
+            (lnum_bases, _)= select_mutations(kmer_spectrum, bases, aux_kmer, kmer_len, lpos)
 
             i = 0
             num_corrections = 0
@@ -126,7 +111,7 @@ class TwoSidedTest(unittest.TestCase):
         #endfor  0 < seqlen - klen
     
         #for bases > (end - start) - klen)
-        for ipos in range(size + 1, end - start):
+        for ipos in range(size + 1, seqlen):
             if solids[ipos] == 1:
                 continue
             rkmer = local_read[size:]

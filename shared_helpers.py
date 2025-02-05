@@ -1,3 +1,4 @@
+from numpy import dtype
 import cudf
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
@@ -236,10 +237,10 @@ def count_error_reads(solids_batch, len):
 
 @cuda.jit(device=True)
 def successor_v2(
-    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, ipos, distance, 
+    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, spos, distance, read_len
 ):
-    seqlen = len(local_read) - ipos - 1
-    offset = ipos + 1
+    seqlen = read_len - spos - 1
+    offset = spos + 1
     # edge cases
     if seqlen < kmer_length or distance <= 0:
         return True
@@ -247,13 +248,10 @@ def successor_v2(
     end_idx = min(seqlen - kmer_length, distance - 1)
     idx = 0
     counter = kmer_length - 2
-    #print(f"running successor with base: {alternative_base} in index:")
     while idx <= end_idx:
-        #print(f"Start: {offset + idx} end: {offset + idx + kmer_length - 1}")
-        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
+        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
-        #print(f"alternative kmer: {transformed_alternative_kmer}")
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
             return False
         counter -= 1
@@ -293,26 +291,24 @@ def successor(
 def predeccessor_v2(
     kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance
 ):
-    #print(f"predeccesor distance: {distance}")
+
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
-        #print("ipos is zero the kmer has no neighbors")
         return True
+    backward_base(aux_kmer, local_read[ipos], kmer_length)
     spos = max(0, ipos - distance)
 
     counter = 2
-    #print(f"running predecessor with base: {alternative_base} in index:")
     for idx in range(ipos - 1, spos - 1, -1):
-        #print(f"from  {idx} to {idx + kmer_length}")
         if counter < kmer_length:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
             counter += 1
         else:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
@@ -350,6 +346,7 @@ def check_solids_cardinality(solids, length):
     for idx in range(length):
        if solids[idx] == -1:
            return False
+
     return True
 @cuda.jit(device=True)
 def test_copying(arr1):
@@ -360,35 +357,57 @@ def test_copying(arr1):
 def test_slice_array(arr, aux_arr_storage, arr_len):
     threadIdx = cuda.grid(1)
     if threadIdx <= arr_len:
-        arr1 = arr[threadIdx]
-        aux_arr = arr1[0: 5]
+        MAX_LEN = 100
+        local_array = cuda.local.array(MAX_LEN, dtype='uint8')
+        slice_arr = local_array[0: 5]
+        for idx in range(5):
+            slice_arr[idx] += (idx + 1)
 
+        #checks if local slice arr is a copy or reference to local_array
         for i in range(5):
-            aux_arr[i] = i + 1 
-            aux_arr_storage[threadIdx][i] = aux_arr[i]
+            aux_arr_storage[threadIdx][i] = slice_arr[i]
         
         #test_copying(arr1)
         return
 @cuda.jit(device=True)
 def copy_kmer(aux_kmer, local_read, start, end):
-    if end  > len(local_read):
-        return -1
-
     for i in range(start, end):
         aux_kmer[i - start] = local_read[i]
-    return 1
 
 @cuda.jit(device=True)
 def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases):
     num_bases = 0 
     original_base = ascii_kmer[pos]
-    for base in bases:
-        ascii_kmer[pos] = base
-        candidate = transform_to_key(ascii_kmer,kmer_len)
-        if in_spectrum(spectrum, candidate):
-            selected_bases[num_bases] = base
-            num_bases += 1
+    for idx in range(4):
+        if bases[idx] == original_base:
+            continue
+        else:
+            ascii_kmer[pos] = bases[idx]
+            candidate = transform_to_key(ascii_kmer, kmer_len)
+            if in_spectrum(spectrum, candidate):
+                selected_bases[num_bases] = bases[idx]
+                num_bases += 1
 
+    #assign back the original base 
     ascii_kmer[pos] = original_base
 
     return num_bases
+
+#backward the base or shifts bases to the left
+@cuda.jit(device=True)
+def backward_base(ascii_kmer, base, kmer_length):
+    for idx in range(kmer_length - 1, -1 , -1):
+        if idx == 0:
+            ascii_kmer[idx] = base
+        else:
+            ascii_kmer[idx] = ascii_kmer[idx - 1]
+
+#forward the base or shifts bases to the right
+@cuda.jit(device=True)
+def forward_base(ascii_kmer, base, kmer_length):
+    for idx in range(0, kmer_length):
+        if idx == (kmer_length - 1):
+            ascii_kmer[idx] = base
+        else:
+            ascii_kmer[idx] = ascii_kmer[idx + 1]
+

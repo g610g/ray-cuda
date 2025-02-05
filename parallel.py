@@ -113,7 +113,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     end = cuda.event()
     start.record()
 
-    # transffering necessary data into GPU side
+    # transfering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
@@ -254,7 +254,7 @@ def ping_resources():
 if __name__ == "__main__":
     (arr, aux_arr)= ray.get(test_cuda_array_context.remote())
     print(aux_arr[0])
-    print(arr[0])
+    #print(arr[0])
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -299,6 +299,7 @@ if __name__ == "__main__":
 
     reversed_occurence_data = occurence_data[::-1]
     cutoff_threshold = calculatecutoff_threshold(occurence_data, occurence_data[0] // 2)
+    #testing static cutoff threshold checking if this calculation causes error
     print(f"cutoff threshold: {cutoff_threshold}")
 
     batch_size = len(offsets) // cpus_detected
@@ -373,9 +374,9 @@ if __name__ == "__main__":
         f"time it takes to write reads back to fastq file: {write_file_endtime - write_file_starttime}"
     )
     # #flattens the array
-    flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
-    with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
-         SeqIO.write(flattened_sequences, output_handle, 'fastq')
+    # flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
+    # with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
+    #      SeqIO.write(flattened_sequences, output_handle, 'fastq')
 
     #visuals
     # plt.figure(figsize=(12, 6))
