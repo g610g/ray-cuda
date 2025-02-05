@@ -287,11 +287,12 @@ def successor(
         idx += 1
 
     return True
+
+#problematic son of a btch
 @cuda.jit(device=True)
 def predeccessor_v2(
     kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance
 ):
-
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
         return True
@@ -299,7 +300,8 @@ def predeccessor_v2(
     spos = max(0, ipos - distance)
 
     counter = 2
-    for idx in range(ipos - 1, spos - 1, -1):
+    idx = ipos - 1
+    while idx >= spos:
         if counter < kmer_length:
             backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
@@ -307,12 +309,15 @@ def predeccessor_v2(
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
             counter += 1
-        else:
-            backward_base(aux_kmer, local_read[idx], kmer_length)
-            candidate = transform_to_key(aux_kmer, kmer_length)
-            if not in_spectrum(kmer_spectrum, candidate):
-                return False
-            counter += 1
+            idx -= 1
+    # for idx in range(ipos - 1, spos - 1, -1):
+    #     if counter < kmer_length:
+    #         backward_base(aux_kmer, local_read[idx], kmer_length)
+    #         aux_kmer[counter] = alternative_base
+    #         candidate = transform_to_key(aux_kmer, kmer_length)
+    #         if not in_spectrum(kmer_spectrum, candidate):
+    #             return False
+    #         counter += 1
     return True
 
 #lookahead validation of preceeding kmers
@@ -342,7 +347,7 @@ def predeccessor(
     return True
 
 @cuda.jit(device=True)
-def check_solids_cardinality(solids, length):
+def all_solid_base(solids, length):
     for idx in range(length):
        if solids[idx] == -1:
            return False
@@ -357,15 +362,17 @@ def test_copying(arr1):
 def test_slice_array(arr, aux_arr_storage, arr_len):
     threadIdx = cuda.grid(1)
     if threadIdx <= arr_len:
-        MAX_LEN = 100
-        local_array = cuda.local.array(MAX_LEN, dtype='uint8')
-        slice_arr = local_array[0: 5]
-        for idx in range(5):
-            slice_arr[idx] += (idx + 1)
-
-        #checks if local slice arr is a copy or reference to local_array
-        for i in range(5):
-            aux_arr_storage[threadIdx][i] = slice_arr[i]
+        for idx in range(10, 9, -1):
+            aux_arr_storage[threadIdx][idx] = arr[threadIdx][idx] + 1
+        # MAX_LEN = 100
+        # local_array = cuda.local.array(MAX_LEN, dtype='uint8')
+        # slice_arr = local_array[0: 5]
+        # for idx in range(5):
+        #     slice_arr[idx] += (idx + 1)
+        #
+        # #checks if local slice arr is a copy or reference to local_array
+        # for i in range(5):
+        #     aux_arr_storage[threadIdx][i] = slice_arr[i]
         
         #test_copying(arr1)
         return

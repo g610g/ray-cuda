@@ -1,5 +1,6 @@
 from numba import cuda
 from shared_helpers import (
+    all_solid_base,
     backward_base,
     identify_solid_bases,
     forward_base,
@@ -8,7 +9,6 @@ from shared_helpers import (
     predeccessor_v2,
     successor,
     successor_v2,
-    check_solids_cardinality,
     copy_kmer,
     select_mutations
 
@@ -33,13 +33,13 @@ def cast_votes(local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum, as
             continue
         for base_idx in range(kmer_len):
             original_base = ascii_kmer[base_idx]
-            for base in bases:
-                if original_base == base:
+            for idx in range(4):
+                if original_base == bases[idx]:
                     continue
-                ascii_kmer[base_idx] = base
+                ascii_kmer[base_idx] = bases[idx]
                 candidate = transform_to_key(ascii_kmer, kmer_len)
                 if in_spectrum(kmer_spectrum, candidate):
-                    vm[ipos + base_idx][base - 1] += 1
+                    vm[ipos + base_idx][bases[idx] - 1] += 1
             ascii_kmer[base_idx] = original_base
 
     #find maximum vote
@@ -118,7 +118,7 @@ def correct_two_sided(seqlen, kmer_spectrum, ascii_kmer, aux_kmer,  kmer_len, ba
         local_read, kmer_len, kmer_spectrum, solids, ascii_kmer, size
     )
     #check whether solids array does not contain -1, return 0 if yes
-    if check_solids_cardinality(solids, seqlen):
+    if all_solid_base(solids, seqlen):
         return 0
 
     klen_idx = kmer_len - 1
@@ -214,13 +214,13 @@ def one_sided_kernel(
         region_indices = cuda.local.array((10, 2), dtype="int8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint16")
-        selected_bases = cuda.local.array(100 , dtype="uint8")
+        selected_bases = cuda.local.array(4, dtype="uint8")
         aux_kmer = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_kmer2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         bases = cuda.local.array(4, dtype="uint8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         aux_corrections = cuda.local.array(MAX_LEN, dtype='uint8')
-        maxIters = 4
+        maxIters = 2
         min_vote = 3
         seqlen = end - start
 
@@ -234,26 +234,33 @@ def one_sided_kernel(
             local_read[idx] = reads[idx + start]
 
         for nerr in range(1, maxIters + 1):
-            max_correction = maxIters - nerr + 1
+            distance = maxIters - nerr + 1
             for _ in range(2):
                 #reset solids every before run of onesided
                 for idx in range(seqlen):
                     solids[idx] = -1
 
-                num_corrections = one_sided_v2(local_read, aux_corrections, aux_kmer, aux_kmer2, region_indices, selected_bases, kmer_len, seqlen, kmer_spectrum, solids, bases, nerr, max_correction)
+                num_corrections = one_sided_v2(local_read, aux_corrections, aux_kmer, aux_kmer2, region_indices, selected_bases, kmer_len, seqlen, kmer_spectrum, solids, bases, nerr, distance)
 
                 #no corrections has been added
-                num_corrections = 0
                 if num_corrections <= 0:
                     break
 
                 else:
                     for idx in range(seqlen):
-                        if aux_corrections[idx] != 0:
+                        if aux_corrections[idx] != 0 and aux_corrections[idx] < 5:
                             local_read[idx] = aux_corrections[idx]
                         #start voting refinement here
 
+        # for idx in range(seqlen):
+        #     solids[idx] = -1
+        # num_corrections = one_sided_v2(local_read, aux_corrections, aux_kmer, aux_kmer2, region_indices, selected_bases, kmer_len, seqlen, kmer_spectrum, solids, bases, 2, 4)
+        # if num_corrections > 0:
+        #     for idx in range(seqlen):
+        #         if aux_corrections[idx] != 0 and aux_corrections[idx] < 5:
+        #             local_read[idx] = aux_corrections[idx]
             #max_vote = cast_votes(local_read, voting_matrix, seqlen, kmer_len, bases, seqlen - kmer_len, kmer_spectrum, aux_kmer)
+
             #
             # #the read is error free at this point
             # if max_vote == 0:
@@ -410,8 +417,8 @@ def one_sided_v2(local_read, aux_corrections, ascii_kmer, aux_kmer, region_indic
     size = seq_len - kmer_len
     regions_count = identify_trusted_regions(seq_len, spectrum, local_read, kmer_len, region_indices, solids, aux_kmer, size)
 
-    if check_solids_cardinality(solids, seq_len):
-        return 0
+    # if all_solid_base(solids, seq_len):
+    #     return 0
 
     for region in range(regions_count):
         right_mer_idx = region_indices[region][1]
@@ -434,6 +441,7 @@ def one_sided_v2(local_read, aux_corrections, ascii_kmer, aux_kmer, region_indic
             #slide the kmer window to the right and add target pos base at the rightmost element
             else:
                 forward_base(ascii_kmer, local_read[target_pos], kmer_len)
+
             #select all possible mutations 
             num_bases = select_mutations(spectrum, bases, ascii_kmer, kmer_len, kmer_len - 1, selected_bases)
 

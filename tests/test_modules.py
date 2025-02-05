@@ -130,9 +130,9 @@ def predeccessor_v2(
     spos = max(0, ipos - distance)
 
     counter = 2
+    idx = ipos - 1
     print(f"running predecessor with base: {alternative_base} in index:")
-    for idx in range(ipos - 1, spos - 1, -1):
-        print(f"from  {idx} to {idx + kmer_length}")
+    while idx >= spos:
         if counter < kmer_length:
             backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
@@ -140,13 +140,23 @@ def predeccessor_v2(
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
             counter += 1
-        else:
-            #copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
-            backward_base(aux_kmer, local_read[idx], kmer_length)
-            candidate = transform_to_key(aux_kmer, kmer_length)
-            if not in_spectrum(kmer_spectrum, candidate):
-                return False
-            counter += 1
+            idx -= 1
+    # for idx in range(ipos - 1, spos - 1, -1):
+    #     print(f"from  {idx} to {idx + kmer_length}")
+    #     if counter < kmer_length:
+    #         backward_base(aux_kmer, local_read[idx], kmer_length)
+    #         aux_kmer[counter] = alternative_base
+    #         candidate = transform_to_key(aux_kmer, kmer_length)
+    #         if not in_spectrum(kmer_spectrum, candidate):
+    #             return False
+    #         counter += 1
+    #     else:
+    #         #copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+    #         backward_base(aux_kmer, local_read[idx], kmer_length)
+    #         candidate = transform_to_key(aux_kmer, kmer_length)
+    #         if not in_spectrum(kmer_spectrum, candidate):
+    #             return False
+    #         counter += 1
     return True
 
 def successor(

@@ -45,7 +45,7 @@ class OneSidedTests(unittest.TestCase):
         # local_read[35] = 3
         # local_read[34] = 3
         # local_read[22] = 3
-        local_read[19] = 2
+        local_read[2] = 3
         kmers_generated = generate_and_return_kmers(local_read, kmer_length , size)
         spectrum += kmers_generated
         spectrum = count_occurence(spectrum)
@@ -54,7 +54,7 @@ class OneSidedTests(unittest.TestCase):
         # local_read[0] = 3
         # local_read[1] = 2
         # local_read[35] = 4
-        local_read[19] = 4
+        local_read[2] = 2
         # local_read[34] = 4
         # local_read[22] = 4
         for nerr in range(1, num_errors + 1):

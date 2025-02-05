@@ -131,12 +131,12 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     # )
 
     # invoking the two sided correction kernel
-    two_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum,
-        dev_reads_1d,
-        dev_offsets,
-        kmer_len,
-    )
+    # two_sided_kernel[bpg, tbp](
+    #     dev_kmer_spectrum,
+    #     dev_reads_1d,
+    #     dev_offsets,
+    #     kmer_len,
+    # )
 
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tbp](
@@ -252,8 +252,8 @@ def ping_resources():
 
 
 if __name__ == "__main__":
-    (arr, aux_arr)= ray.get(test_cuda_array_context.remote())
-    print(aux_arr[0])
+    # (arr, aux_arr)= ray.get(test_cuda_array_context.remote())
+    # print(aux_arr[0])
     #print(arr[0])
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
@@ -262,12 +262,12 @@ if __name__ == "__main__":
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
     # remove this after testing
-    zeros = [0] * 50000
-    test_batch_size = len(zeros) // cpus_detected
-    remaining_refs = [
-        increment_array.remote(zeros[batch_idx : test_batch_size + batch_idx])
-        for batch_idx in range(0, len(zeros), test_batch_size)
-    ]
+    # zeros = [0] * 50000
+    # test_batch_size = len(zeros) // cpus_detected
+    # remaining_refs = [
+    #     increment_array.remote(zeros[batch_idx : test_batch_size + batch_idx])
+    #     for batch_idx in range(0, len(zeros), test_batch_size)
+    # ]
     # does converting it into list and storing into memory has some implications as compared to represent it as a generator?
     with open(sys.argv[1]) as handle:
         fastq_data = SeqIO.parse(handle, "fastq")
@@ -285,7 +285,7 @@ if __name__ == "__main__":
     kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads))
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads))
     reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads))
-    pd_kmers = kmer_occurences.to_pandas()
+    #pd_kmers = kmer_occurences.to_pandas()
     kmer_lens = ray.get(gpu_extractor.give_lengths_of_kmers.remote(reads))
 
     print(
