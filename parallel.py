@@ -4,6 +4,7 @@ import sys
 import cudf
 import numpy as np
 from Bio import SeqIO, Seq
+from host.one_sided import entry
 from shared_core_correction import *
 from numba import cuda
 from shared_helpers import (
@@ -11,9 +12,6 @@ from shared_helpers import (
     to_local_reads,
     back_to_sequence_helper,
     assign_sequence,
-    increment_array,
-    count_error_reads,
-    calculate_reads_solidity,
 )
 from voting import *
 from kmer import *
@@ -117,10 +115,9 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
-    # dev_corrected_counter = cuda.to_device(np.zeros((offsets.shape[0], 50), dtype='uint64'))
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
-    not_corrected_counter = cuda.to_device(np.zeros(offsets.shape[0], dtype="int16"))
+
     # allocating gpu threads
     tbp = 512
     bpg = offsets.shape[0] // tbp
@@ -131,21 +128,20 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     # )
 
     # invoking the two sided correction kernel
-    # two_sided_kernel[bpg, tbp](
+    two_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+    )
+
+    # voting refinement is done within the one_sided_kernel
+    # one_sided_kernel[bpg, tbp](
     #     dev_kmer_spectrum,
     #     dev_reads_1d,
     #     dev_offsets,
     #     kmer_len,
     # )
-
-    # voting refinement is done within the one_sided_kernel
-    one_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum,
-        dev_reads_1d,
-        dev_offsets,
-        kmer_len,
-        not_corrected_counter,
-    )
 
     # calculates the solidity of kmer after two sided correction
     # calculate_reads_solidity[bpg, tbp](
@@ -318,16 +314,30 @@ if __name__ == "__main__":
     [solids_before, solids_after, corrected_reads_array] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
+    put_start_time = time.perf_counter()
+    corrected_reads_array_ref = ray.put(corrected_reads_array)
+    sorted_kmer_np_ref = ray.put(sorted_kmer_np)
+    offsets_ref = [
+        ray.put(offsets[batch_idx : batch_idx + batch_size])
+        for batch_idx in range(0, len(offsets), batch_size)
+    ]
+    put_end_time = time.perf_counter()
+    print(f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}")
 
-    # print("reads solidity after one sided")
-    # ray.get(
-    #     [
-    #         count_error_reads.remote(
-    #             solids_after[batch_idx : batch_idx + batch_size], 100
-    #         )
-    #         for batch_idx in range(0, len(solids_after), batch_size)
-    #     ]
-    # )
+    entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)] 
+
+    print("Entries has been sent")
+
+    while len(entry_ids) > 0:
+        ready_ids, remaining_ids = ray.wait(entry_ids, num_returns=1, timeout=None)
+
+        print(f"{len(ready_ids)} is done")
+        for ready_id in ready_ids:
+            
+            res = ray.get(ready_id)
+        
+        entry_ids = remaining_ids
+    print("One sided in the host environment is done") 
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(

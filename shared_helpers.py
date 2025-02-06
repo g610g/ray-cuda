@@ -249,7 +249,7 @@ def successor_v2(
     idx = 0
     counter = kmer_length - 2
     while idx <= end_idx:
-        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
+        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length - 1)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
@@ -296,14 +296,13 @@ def predeccessor_v2(
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
         return True
-    backward_base(aux_kmer, local_read[ipos], kmer_length)
     spos = max(0, ipos - distance)
 
     counter = 2
     idx = ipos - 1
     while idx >= spos:
         if counter < kmer_length:
-            backward_base(aux_kmer, local_read[idx], kmer_length)
+            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
@@ -376,6 +375,7 @@ def test_slice_array(arr, aux_arr_storage, arr_len):
         
         #test_copying(arr1)
         return
+
 @cuda.jit(device=True)
 def copy_kmer(aux_kmer, local_read, start, end):
     for i in range(start, end):
