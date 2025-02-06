@@ -249,7 +249,7 @@ def successor_v2(
     idx = 0
     counter = kmer_length - 2
     while idx <= end_idx:
-        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length - 1)
+        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):

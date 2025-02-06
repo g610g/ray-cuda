@@ -232,6 +232,8 @@ def one_sided_kernel(
         for idx in range(end - start):
             local_read[idx] = reads[idx + start]
 
+
+
         for nerr in range(1, maxIters + 1):
             distance = maxIters - nerr + 1
             for _ in range(2):
@@ -241,27 +243,23 @@ def one_sided_kernel(
 
                 #copy local read to original read
                 copy_kmer(original_read, local_read, 0, seqlen)
-                # for idx in range(0, seqlen):
-                #     original_reads[threadIdx][idx] = local_read[idx]
+
 
                 one_sided_v2(local_read, original_read, aux_kmer, aux_kmer2, region_indices, selected_bases, kmer_len, seqlen, kmer_spectrum, solids, bases, nerr, distance)
 
-                #copy original read to local read
-                # for idx in range(0, seqlen):
-                #     local_read[idx] = original_reads[][idx]
                 copy_kmer(local_read, original_read, 0, seqlen)
 
 
             #start voting refinement here
 
-            # max_vote = cast_votes(local_read, voting_matrix, seqlen, kmer_len, bases, seqlen - kmer_len, kmer_spectrum, aux_kmer)
-            #
-            #
-            # #the read is error free at this point
-            # if max_vote == 0:
-            #     return
-            # elif max_vote >= min_vote:
-            #     apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
+            max_vote = cast_votes(local_read, voting_matrix, seqlen, kmer_len, bases, seqlen - kmer_len, kmer_spectrum, aux_kmer)
+
+
+            #the read is error free at this point
+            if max_vote == 0:
+                return
+            elif max_vote >= min_vote:
+                apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
         # endfor idx to max_corrections
 
         # copies back corrected local read into global memory stored reads
@@ -442,7 +440,7 @@ def one_sided_v2(local_read, original_read, ascii_kmer, aux_kmer, region_indices
             else:
                 for idx in range(0, num_bases):
                     if successor_v2(kmer_len, original_read, aux_kmer, spectrum, selected_bases[idx], spos, distance, seq_len):
-                        copy_kmer(aux_kmer, original_read, spos, target_pos + 1)
+                        copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
                         aux_kmer[kmer_len - 1] = selected_bases[idx]
                         candidate = transform_to_key(aux_kmer, kmer_len)
                         aux_occurence = give_kmer_multiplicity(spectrum, candidate)

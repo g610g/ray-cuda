@@ -136,12 +136,12 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     )
 
     # voting refinement is done within the one_sided_kernel
-    # one_sided_kernel[bpg, tbp](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    # )
+    one_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+    )
 
     # calculates the solidity of kmer after two sided correction
     # calculate_reads_solidity[bpg, tbp](
@@ -324,20 +324,20 @@ if __name__ == "__main__":
     put_end_time = time.perf_counter()
     print(f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}")
 
-    entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)] 
-
-    print("Entries has been sent")
-
-    while len(entry_ids) > 0:
-        ready_ids, remaining_ids = ray.wait(entry_ids, num_returns=1, timeout=None)
-
-        print(f"{len(ready_ids)} is done")
-        for ready_id in ready_ids:
-            
-            res = ray.get(ready_id)
-        
-        entry_ids = remaining_ids
-    print("One sided in the host environment is done") 
+    # entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)] 
+    #
+    # print("Entries has been sent")
+    #
+    # while len(entry_ids) > 0:
+    #     ready_ids, remaining_ids = ray.wait(entry_ids, num_returns=1, timeout=None)
+    #
+    #     print(f"{len(ready_ids)} is done")
+    #     for ready_id in ready_ids:
+    #
+    #         res = ray.get(ready_id)
+    #
+    #     entry_ids = remaining_ids
+    # print("One sided in the host environment is done") 
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
