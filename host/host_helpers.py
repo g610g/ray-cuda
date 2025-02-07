@@ -53,6 +53,10 @@ def binary_search_2d(sorted_arr, needle):
 #we can optimize this more 
 def in_spectrum(spectrum, kmer):
 
+    index = np.searchsorted(spectrum[:, 0], kmer)
+    if index < 0:
+        return False
+    return True
     #return np.any(spectrum[:, 0] == kmer)
 
     if binary_search_2d(spectrum, kmer) != -1:

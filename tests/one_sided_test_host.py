@@ -3,15 +3,11 @@ import numpy as np
 from numpy import random 
 from numpy.testing import assert_array_equal
 from test_modules import (
-    copy_kmer,
     count_occurence,
     generate_and_return_kmers,
     generate_kmers,
-    forward_base,
-    backward_base
 )
 from test_correction_modules import (
-    one_sided_v2,
     one_sided_v2_host,
 )
 from voting_module import cast_votes, apply_voting_result
@@ -59,7 +55,7 @@ class OneSidedTests(unittest.TestCase):
         # local_read[22] = 4
         for nerr in range(1, num_errors + 1):
             for _ in range(max_iters):
-                for idx in range(len(local_read)):
+                for idx in range(seq_len):
                     solids[idx] = -1
                 original_read = local_read.copy()
 

@@ -1,5 +1,6 @@
 from numpy import dtype
 import cudf
+import kmer
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
 from Bio import Seq
@@ -249,7 +250,7 @@ def successor_v2(
     idx = 0
     counter = kmer_length - 2
     while idx <= end_idx:
-        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
+        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
@@ -258,6 +259,7 @@ def successor_v2(
         idx += 1
 
     return True
+
 #lookahead validation of succeeding kmers
 @cuda.jit(device=True)
 def successor(
@@ -297,26 +299,19 @@ def predeccessor_v2(
     if ipos <= 0 or distance <= 0:
         return True
     spos = max(0, ipos - distance)
-
+    backward_base(aux_kmer, local_read[ipos], kmer_length) 
     counter = 2
     idx = ipos - 1
     while idx >= spos:
         if counter < kmer_length:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            #copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
-            counter += 1
-            idx -= 1
-    # for idx in range(ipos - 1, spos - 1, -1):
-    #     if counter < kmer_length:
-    #         backward_base(aux_kmer, local_read[idx], kmer_length)
-    #         aux_kmer[counter] = alternative_base
-    #         candidate = transform_to_key(aux_kmer, kmer_length)
-    #         if not in_spectrum(kmer_spectrum, candidate):
-    #             return False
-    #         counter += 1
+        counter += 1
+        idx -= 1
     return True
 
 #lookahead validation of preceeding kmers
@@ -403,12 +398,18 @@ def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases)
 #backward the base or shifts bases to the left
 @cuda.jit(device=True)
 def backward_base(ascii_kmer, base, kmer_length):
-    for idx in range(kmer_length - 1, -1 , -1):
+    idx = kmer_length - 1
+    while idx >= 0:
         if idx == 0:
             ascii_kmer[idx] = base
         else:
             ascii_kmer[idx] = ascii_kmer[idx - 1]
-
+        idx -= 1
+    # for idx in range(kmer_length - 1, -1, -1):
+    #     if idx == 0:
+    #         ascii_kmer[idx] = base
+    #     else:
+    #         ascii_kmer[idx] = ascii_kmer[idx - 1]
 #forward the base or shifts bases to the right
 @cuda.jit(device=True)
 def forward_base(ascii_kmer, base, kmer_length):

@@ -55,9 +55,12 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
     region_indices = np.zeros((10, 2), dtype='uint16')
     regions_count = identify_trusted_regions(seq_len, spectrum, local_read, kmer_len, region_indices, solids, aux_kmer)
     print(solids)
+    print(region_indices[:regions_count,:])
+    print(f"Regions Count: {regions_count}")
     # print(region_indices) 
     for region in range(regions_count):
         right_mer_idx = region_indices[region][1]
+        right_orientation_idx = -1
         last_position = -1
         num_corrections = 0
         for target_pos in range(right_mer_idx + 1, seq_len):
@@ -80,6 +83,10 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
             #directly apply correction if mutation is equal to 1
             if num_bases == 1:
                 print(f"correction toward right index {target_pos} has one alternative base: {alternative_bases[0]}")
+
+                if right_orientation_idx < 0:
+                    print(f"index {target_pos} is the first index in right orientation that has been corrected")
+                    right_orientation_idx = target_pos
                 aux_corrections[target_pos] = alternative_bases[0]
                 ascii_kmer[kmer_len - 1] = alternative_bases[0]
                 corrections_count += 1
@@ -105,6 +112,10 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
                 #apply correction
                 if best_base_occurence > -1 and best_base > -1:
                     print(f"{best_base} is the chosen alternative base")
+                    if right_orientation_idx < 0:
+                        print(f"index {target_pos} is the first index in right orientation that has been corrected")
+                        right_orientation_idx = target_pos
+
                     aux_corrections[target_pos] = best_base
                     ascii_kmer[kmer_len - 1] = best_base
                     corrections_count += 1
@@ -125,7 +136,7 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
                             aux_corrections[pos] = 0
 
                         #remove corrections in aux_corrections
-                        corrections_count -= ((target_pos + 1) - last_position)
+                        corrections_count -= num_corrections
                         region_indices[region][1] =  last_position - 1
                         break
                         #break correction for this orientation after reverting back kmers
@@ -145,7 +156,11 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
         #for left orientation
         lkmer_idx = region_indices[region][0]
         if lkmer_idx > 0:
-            last_position = -1
+            if right_orientation_idx >= 0 :
+                last_position = right_orientation_idx
+            else:
+                last_position = -1
+            print(f" lkmer: {lkmer_idx} last position for left orientation is {last_position}")
             num_corrections = 0
 
             for pos in range(lkmer_idx - 1, -1, -1):
@@ -204,7 +219,7 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
                             for base_idx in range(pos, last_position + 1):
                                 print(f"Reverting base position: {base_idx} removing base {aux_corrections[base_idx]}")
                                 aux_corrections[base_idx] = 0
-                            corrections_count -= ((last_position + 1) - pos)
+                            corrections_count -= num_corrections
                             region_indices[region][0] = last_position + 1
                             break
                     else:

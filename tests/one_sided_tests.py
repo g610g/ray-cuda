@@ -20,7 +20,7 @@ class OneSidedTests(unittest.TestCase):
     def test_one_sided_v2(self):
         MAX_LEN = 300
 
-        local_read = np.array([4, 4, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 4, 1, 2, 3, 4, 2, 2, 1, 3, 2, 1], dtype='uint8')
+        local_read = np.random.randint(1, 5, size=100)
         correct_read = local_read.copy()
         kmer_length = 13
         aux_kmer = np.zeros(kmer_length, dtype='uint8')
@@ -42,21 +42,21 @@ class OneSidedTests(unittest.TestCase):
         generate_kmers(local_read, kmer_length, spectrum)
         # local_read[0] = 2
         # local_read[1] = 3
-        # local_read[35] = 3
-        # local_read[34] = 3
-        # local_read[22] = 3
-        local_read[2] = 3
+        local_read[60] = 3
+        local_read[61] = 2
+        local_read[59] = 4
+        local_read[20] = 3
         kmers_generated = generate_and_return_kmers(local_read, kmer_length , size)
         spectrum += kmers_generated
         spectrum = count_occurence(spectrum)
 
-        print(spectrum)
+        print(local_read)
         # local_read[0] = 3
         # local_read[1] = 2
-        # local_read[35] = 4
-        local_read[2] = 2
-        # local_read[34] = 4
-        # local_read[22] = 4
+        local_read[60] = 2
+        local_read[61] = 1
+        local_read[59] = 2
+        local_read[20] = 1
         for nerr in range(1, num_errors + 1):
             for _ in range(max_iters):
                 for idx in range(len(local_read)):

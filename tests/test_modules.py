@@ -164,15 +164,18 @@ def predeccessor_v2(
     counter = 2
     idx = ipos - 1
     print(f"running predecessor with base: {alternative_base} in index:")
+    print(f"spos: {spos} idx:{idx}")
+    print(f"backward base {aux_kmer} ipos: {ipos} to ipos + kmerlen {ipos + kmer_length}")
     while idx >= spos:
         if counter < kmer_length:
             backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
+            print(f"backward base {aux_kmer} ipos: {idx} to ipos + kmerlen {idx + kmer_length}")
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
-            counter += 1
-            idx -= 1
+        counter += 1
+        idx -= 1
     return True
 def predeccessor_v2_host(
     kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance

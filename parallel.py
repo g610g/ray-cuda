@@ -4,7 +4,6 @@ import sys
 import cudf
 import numpy as np
 from Bio import SeqIO, Seq
-from host.one_sided import entry
 from shared_core_correction import *
 from numba import cuda
 from shared_helpers import (
@@ -311,6 +310,8 @@ if __name__ == "__main__":
     sort_end_time = time.perf_counter()
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
+
+    #correction within GPU context happens here
     [solids_before, solids_after, corrected_reads_array] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
@@ -323,21 +324,6 @@ if __name__ == "__main__":
     ]
     put_end_time = time.perf_counter()
     print(f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}")
-
-    # entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)] 
-    #
-    # print("Entries has been sent")
-    #
-    # while len(entry_ids) > 0:
-    #     ready_ids, remaining_ids = ray.wait(entry_ids, num_returns=1, timeout=None)
-    #
-    #     print(f"{len(ready_ids)} is done")
-    #     for ready_id in ready_ids:
-    #
-    #         res = ray.get(ready_id)
-    #
-    #     entry_ids = remaining_ids
-    # print("One sided in the host environment is done") 
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
