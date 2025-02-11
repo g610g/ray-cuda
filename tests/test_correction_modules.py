@@ -55,6 +55,7 @@ def one_sided_v2(local_read, aux_corrections , ascii_kmer, aux_kmer, kmer_len,se
     region_indices = np.zeros((10, 2), dtype='uint16')
     regions_count = identify_trusted_regions(seq_len, spectrum, local_read, kmer_len, region_indices, solids, aux_kmer)
     print(solids)
+    print(region_indices)
     # print(region_indices) 
     for region in range(regions_count):
         right_mer_idx = region_indices[region][1]

@@ -13,13 +13,14 @@ from shared_helpers import (
     back_to_sequence_helper,
     assign_sequence,
 )
+from utility_helpers.utilities import check_votes
 from voting import *
 from kmer import *
 
 # import seaborn as sns
 # import matplotlib.pyplot as plt
 
-ray.init(dashboard_host='0.0.0.0')
+ray.init(dashboard_host="0.0.0.0")
 
 
 @ray.remote(num_gpus=1)
@@ -95,14 +96,15 @@ def check_corrections(kmers_tracker):
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def test_cuda_array_context():
-    my_arr = np.zeros((512, 10), dtype='uint16') 
-    my_aux_arr = np.zeros((512, 10), dtype='uint16') 
+    my_arr = np.zeros((512, 10), dtype="uint16")
+    my_aux_arr = np.zeros((512, 10), dtype="uint16")
     dev_arr = cuda.to_device(my_arr)
     dev_aux_arr = cuda.to_device(my_aux_arr)
     tbp = 512
     bpg = my_arr.shape[0] // tbp
-    test_slice_array[bpg, tbp] (dev_arr, dev_aux_arr, len(my_arr))
+    test_slice_array[bpg, tbp](dev_arr, dev_aux_arr, len(my_arr))
     return (dev_arr.copy_to_host(), dev_aux_arr.copy_to_host())
+
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
@@ -117,6 +119,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     dev_offsets = cuda.to_device(offsets)
     dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
     dev_solids_after = cuda.to_device(np.zeros((offsets.shape[0], 300), dtype="int8"))
+    max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
 
     # allocating gpu threads
     tbp = 512
@@ -137,10 +140,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
 
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum,
-        dev_reads_1d,
-        dev_offsets,
-        kmer_len,
+        dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
     )
 
     # calculates the solidity of kmer after two sided correction
@@ -157,6 +157,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
         dev_solids.copy_to_host(),
         dev_solids_after.copy_to_host(),
         dev_reads_1d.copy_to_host(),
+        max_votes.copy_to_host(),
     ]
 
 
@@ -250,7 +251,7 @@ def ping_resources():
 if __name__ == "__main__":
     # (arr, aux_arr)= ray.get(test_cuda_array_context.remote())
     # print(aux_arr[0])
-    #print(arr[0])
+    # print(arr[0])
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -275,13 +276,13 @@ if __name__ == "__main__":
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
 
-    kmer_len = 13
+    kmer_len = 15
 
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads))
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads))
     reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads))
-    #pd_kmers = kmer_occurences.to_pandas()
+    # pd_kmers = kmer_occurences.to_pandas()
     kmer_lens = ray.get(gpu_extractor.give_lengths_of_kmers.remote(reads))
 
     print(
@@ -295,7 +296,7 @@ if __name__ == "__main__":
 
     reversed_occurence_data = occurence_data[::-1]
     cutoff_threshold = calculatecutoff_threshold(occurence_data, occurence_data[0] // 2)
-    #testing static cutoff threshold checking if this calculation causes error
+    # testing static cutoff threshold checking if this calculation causes error
     print(f"cutoff threshold: {cutoff_threshold}")
 
     batch_size = len(offsets) // cpus_detected
@@ -311,8 +312,15 @@ if __name__ == "__main__":
     sort_end_time = time.perf_counter()
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
-    [solids_before, solids_after, corrected_reads_array] = ray.get(
+    [solids_before, solids_after, corrected_reads_array, votes] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
+    )
+    # check votes
+    ray.get(
+        [
+            check_votes.remote(votes[batch_idx : batch_idx + batch_size])
+            for batch_idx in range(0, len(votes), batch_size)
+        ]
     )
     put_start_time = time.perf_counter()
     corrected_reads_array_ref = ray.put(corrected_reads_array)
@@ -322,9 +330,11 @@ if __name__ == "__main__":
         for batch_idx in range(0, len(offsets), batch_size)
     ]
     put_end_time = time.perf_counter()
-    print(f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}")
+    print(
+        f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}"
+    )
 
-    # entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)] 
+    # entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)]
     #
     # print("Entries has been sent")
     #
@@ -337,7 +347,7 @@ if __name__ == "__main__":
     #         res = ray.get(ready_id)
     #
     #     entry_ids = remaining_ids
-    # print("One sided in the host environment is done") 
+    # print("One sided in the host environment is done")
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
@@ -359,7 +369,7 @@ if __name__ == "__main__":
         f"time it takes to serialize sequence objects: {put_object_end_time - put_object_starttime}"
     )
 
-    #assign sequence takes a lot of time
+    # assign sequence takes a lot of time
     new_sequences = ray.get(
         [
             assign_sequence.remote(
@@ -388,7 +398,7 @@ if __name__ == "__main__":
     # with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
     #      SeqIO.write(flattened_sequences, output_handle, 'fastq')
 
-    #visuals
+    # visuals
     # plt.figure(figsize=(12, 6))
     # sns.histplot(pd_kmers['count'], bins=60, kde=True, color='blue', alpha=0.7)
     # plt.title('K-mer Coverage Histogram')

@@ -1,10 +1,10 @@
 from numpy import dtype
 import cudf
+import kmer
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
 from Bio import Seq
 import ray
-
 
 
 # function that checks the kmer tracker and reverse back kmers thats been corrected greater than max allowed
@@ -24,7 +24,9 @@ def check_tracker(
 
 
 @cuda.jit(device=True)
-def identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size):
+def identify_solid_bases(
+    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size
+):
 
     for idx in range(0, size + 1):
         copy_kmer(ascii_kmer, local_reads, idx, idx + kmer_len)
@@ -34,54 +36,52 @@ def identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, ascii_kme
         if in_spectrum(kmer_spectrum, curr_kmer):
             mark_solids_array(solids, idx, idx + kmer_len)
 
+
 @cuda.jit(device=True)
 def identify_trusted_regions(
-    seq_len, kmer_spectrum, local_reads, kmer_len, region_indices, solids, aux_kmer, size
+    seq_len,
+    kmer_spectrum,
+    local_reads,
+    kmer_len,
+    region_indices,
+    solids,
+    aux_kmer,
+    size,
 ):
 
     identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, aux_kmer, size)
 
-    current_indices_idx = 0
+    trusted_regions_count = 0
     base_count = 0
     region_start = 0
     region_end = 0
 
-    # idx will be a relative index
     for idx in range(seq_len):
-
-        # a trusted region has been found. Append it into the identified regions
-        if base_count >= kmer_len and solids[idx] == -1:
-
-            (
-                region_indices[current_indices_idx][0],
-                region_indices[current_indices_idx][1],
-            ) = (region_start, region_end)
-            region_start = idx + 1
-            region_end = idx + 1
-            current_indices_idx += 1
-            base_count = 0
-
-        # reset the region start since its left part is not a trusted region anymore
-        if solids[idx] == -1 and base_count < kmer_len:
-            region_start = idx + 1
-            region_end = idx + 1
-            base_count = 0
-
         if solids[idx] == 1:
             region_end = idx
             base_count += 1
+        else:
+            if base_count >= kmer_len:
+                (
+                    region_indices[trusted_regions_count][0],
+                    region_indices[trusted_regions_count][1],
+                ) = (region_start, region_end)
+                trusted_regions_count += 1
+            region_start = idx + 1
+            region_end = idx + 1
+            base_count = 0
 
-    # ending
     if base_count >= kmer_len:
 
         (
-            region_indices[current_indices_idx][0],
-            region_indices[current_indices_idx][1],
+            region_indices[trusted_regions_count][0],
+            region_indices[trusted_regions_count][1],
         ) = (region_start, region_end)
-        current_indices_idx += 1
 
-    # this will be the length or the number of trusted regions
-    return current_indices_idx
+        trusted_regions_count += 1
+
+    return trusted_regions_count
+
 
 @cuda.jit(device=True)
 def to_local_reads(reads_1d, local_reads, start, end):
@@ -143,9 +143,7 @@ def increment_array(arr):
 # ray serializes object references and raw data
 @ray.remote(num_cpus=1)
 def assign_sequence(read_batch, sequence_batch):
-    translation_table = str.maketrans(
-        {"1": "A", "2": "C", "3": "G", "4": "T", "5": "N"}
-    )
+    translation_table = str.maketrans({"1": "A", "2": "C", "3": "G", "4": "T"})
     for int_read, sequence in zip(read_batch, sequence_batch):
         non_zeros_int_read = [x for x in int_read if x != 0]
         read_string = "".join(map(str, non_zeros_int_read))
@@ -235,9 +233,17 @@ def count_error_reads(solids_batch, len):
                 break
     print(f"error reads detected: {error_reads}")
 
+
 @cuda.jit(device=True)
 def successor_v2(
-    kmer_length, local_read, aux_kmer, kmer_spectrum , alternative_base, spos, distance, read_len
+    kmer_length,
+    local_read,
+    aux_kmer,
+    kmer_spectrum,
+    alternative_base,
+    spos,
+    distance,
+    read_len,
 ):
     seqlen = read_len - spos - 1
     offset = spos + 1
@@ -249,7 +255,7 @@ def successor_v2(
     idx = 0
     counter = kmer_length - 2
     while idx <= end_idx:
-        copy_kmer(aux_kmer, local_read, offset + idx, offset + idx + kmer_length)
+        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
         aux_kmer[counter] = alternative_base
         transformed_alternative_kmer = transform_to_key(aux_kmer, kmer_length)
         if not in_spectrum(kmer_spectrum, transformed_alternative_kmer):
@@ -258,10 +264,12 @@ def successor_v2(
         idx += 1
 
     return True
-#lookahead validation of succeeding kmers
+
+
+# lookahead validation of succeeding kmers
 @cuda.jit(device=True)
 def successor(
-    kmer_length, local_read, kmer_spectrum , alternative_base, max_traverse, ipos
+    kmer_length, local_read, kmer_spectrum, alternative_base, max_traverse, ipos
 ):
     seqlen = len(local_read) - ipos - 1
     offset = ipos + 1
@@ -288,38 +296,39 @@ def successor(
 
     return True
 
-#problematic son of a btch
+
+# problematic son of a btch
 @cuda.jit(device=True)
 def predeccessor_v2(
-    kmer_length, local_read, aux_kmer, kmer_spectrum, target_pos, alternative_base, distance
+    kmer_length,
+    local_read,
+    aux_kmer,
+    kmer_spectrum,
+    target_pos,
+    alternative_base,
+    distance,
 ):
     ipos = target_pos - 1
     if ipos <= 0 or distance <= 0:
         return True
     spos = max(0, ipos - distance)
-
+    backward_base(aux_kmer, local_read[ipos], kmer_length)
     counter = 2
     idx = ipos - 1
     while idx >= spos:
         if counter < kmer_length:
-            copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            # copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+            backward_base(aux_kmer, local_read[idx], kmer_length)
             aux_kmer[counter] = alternative_base
             candidate = transform_to_key(aux_kmer, kmer_length)
             if not in_spectrum(kmer_spectrum, candidate):
                 return False
-            counter += 1
-            idx -= 1
-    # for idx in range(ipos - 1, spos - 1, -1):
-    #     if counter < kmer_length:
-    #         backward_base(aux_kmer, local_read[idx], kmer_length)
-    #         aux_kmer[counter] = alternative_base
-    #         candidate = transform_to_key(aux_kmer, kmer_length)
-    #         if not in_spectrum(kmer_spectrum, candidate):
-    #             return False
-    #         counter += 1
+        counter += 1
+        idx -= 1
     return True
 
-#lookahead validation of preceeding kmers
+
+# lookahead validation of preceeding kmers
 @cuda.jit(device=True)
 def predeccessor(
     kmer_length, local_read, kmer_spectrum, target_pos, alternative_base, max_traverse
@@ -345,17 +354,21 @@ def predeccessor(
 
     return True
 
+
 @cuda.jit(device=True)
-def all_solid_base(solids, length):
-    for idx in range(length):
-       if solids[idx] == -1:
-           return False
+def all_solid_base(solids, seqlen):
+    for idx in range(seqlen):
+        if solids[idx] == -1:
+            return False
 
     return True
+
+
 @cuda.jit(device=True)
 def test_copying(arr1):
     for idx in range(5):
         arr1[idx] = idx + 1
+
 
 @cuda.jit()
 def test_slice_array(arr, aux_arr_storage, arr_len):
@@ -372,18 +385,20 @@ def test_slice_array(arr, aux_arr_storage, arr_len):
         # #checks if local slice arr is a copy or reference to local_array
         # for i in range(5):
         #     aux_arr_storage[threadIdx][i] = slice_arr[i]
-        
-        #test_copying(arr1)
+
+        # test_copying(arr1)
         return
+
 
 @cuda.jit(device=True)
 def copy_kmer(aux_kmer, local_read, start, end):
     for i in range(start, end):
         aux_kmer[i - start] = local_read[i]
 
+
 @cuda.jit(device=True)
 def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases):
-    num_bases = 0 
+    num_bases = 0
     original_base = ascii_kmer[pos]
     for idx in range(4):
         if bases[idx] == original_base:
@@ -395,21 +410,30 @@ def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases)
                 selected_bases[num_bases] = bases[idx]
                 num_bases += 1
 
-    #assign back the original base 
+    # assign back the original base
     ascii_kmer[pos] = original_base
 
     return num_bases
 
-#backward the base or shifts bases to the left
+
+# backward the base or shifts bases to the left
 @cuda.jit(device=True)
 def backward_base(ascii_kmer, base, kmer_length):
-    for idx in range(kmer_length - 1, -1 , -1):
+    idx = kmer_length - 1
+    while idx >= 0:
         if idx == 0:
             ascii_kmer[idx] = base
         else:
             ascii_kmer[idx] = ascii_kmer[idx - 1]
+        idx -= 1
+    # for idx in range(kmer_length - 1, -1, -1):
+    #     if idx == 0:
+    #         ascii_kmer[idx] = base
+    #     else:
+    #         ascii_kmer[idx] = ascii_kmer[idx - 1]
 
-#forward the base or shifts bases to the right
+
+# forward the base or shifts bases to the right
 @cuda.jit(device=True)
 def forward_base(ascii_kmer, base, kmer_length):
     for idx in range(0, kmer_length):
@@ -417,4 +441,3 @@ def forward_base(ascii_kmer, base, kmer_length):
             ascii_kmer[idx] = base
         else:
             ascii_kmer[idx] = ascii_kmer[idx + 1]
-

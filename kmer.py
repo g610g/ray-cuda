@@ -8,9 +8,7 @@ import cudf
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
         self.kmer_length = kmer_length
-        self.translation_table = str.maketrans(
-            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"}
-        )
+        self.translation_table = str.maketrans({"A": "1", "C": "2", "G": "3", "T": "4"})
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -103,5 +101,3 @@ def calculatecutoff_threshold(occurence_data, bin):
         if hist_vals[idx] <= hist_vals[min_density_idx]:
             min_density_idx = idx
     return math.ceil(bin_centers[min_density_idx])
-
-
