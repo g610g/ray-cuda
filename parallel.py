@@ -98,6 +98,10 @@ def check_corrections(kmers_tracker):
 def test_cuda_array_context():
     my_arr = np.zeros((512, 10), dtype="uint16")
     my_aux_arr = np.zeros((512, 10), dtype="uint16")
+
+    for idx in range(10):
+        my_arr[idx][0] = idx + 1
+
     dev_arr = cuda.to_device(my_arr)
     dev_aux_arr = cuda.to_device(my_aux_arr)
     tbp = 512
@@ -249,9 +253,9 @@ def ping_resources():
 
 
 if __name__ == "__main__":
-    # (arr, aux_arr)= ray.get(test_cuda_array_context.remote())
-    # print(aux_arr[0])
-    # print(arr[0])
+    # (arr, aux_arr) = ray.get(test_cuda_array_context.remote())
+    # for idx in range(10):
+    #     print(aux_arr[idx][0])
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -276,7 +280,7 @@ if __name__ == "__main__":
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
 
-    kmer_len = 15
+    kmer_len = 18
 
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads))

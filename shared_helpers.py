@@ -374,19 +374,10 @@ def test_copying(arr1):
 def test_slice_array(arr, aux_arr_storage, arr_len):
     threadIdx = cuda.grid(1)
     if threadIdx <= arr_len:
-        for idx in range(10, 9, -1):
-            aux_arr_storage[threadIdx][idx] = arr[threadIdx][idx] + 1
-        # MAX_LEN = 100
-        # local_array = cuda.local.array(MAX_LEN, dtype='uint8')
-        # slice_arr = local_array[0: 5]
-        # for idx in range(5):
-        #     slice_arr[idx] += (idx + 1)
-        #
-        # #checks if local slice arr is a copy or reference to local_array
-        # for i in range(5):
-        #     aux_arr_storage[threadIdx][i] = slice_arr[i]
 
-        # test_copying(arr1)
+        # testing warp divergence conditional statements
+        if arr[threadIdx][0] != 0:
+            aux_arr_storage[threadIdx][0] = 10 // arr[threadIdx][0]
         return
 
 
@@ -426,11 +417,6 @@ def backward_base(ascii_kmer, base, kmer_length):
         else:
             ascii_kmer[idx] = ascii_kmer[idx - 1]
         idx -= 1
-    # for idx in range(kmer_length - 1, -1, -1):
-    #     if idx == 0:
-    #         ascii_kmer[idx] = base
-    #     else:
-    #         ascii_kmer[idx] = ascii_kmer[idx - 1]
 
 
 # forward the base or shifts bases to the right

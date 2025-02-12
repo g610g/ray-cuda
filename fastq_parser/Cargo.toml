@@ -1,0 +1,13 @@
+[package]
+name = "fastq_parser"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "fastq_parser"
+crate-type = ["cdylib"]
+
+[dependencies]
+bio = "2.0.3"
+pyo3 = "0.23.3"
