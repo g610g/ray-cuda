@@ -2,6 +2,13 @@ use bio::io::fastq::{self, Record};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use std::{thread, time::*};
+use rayon::prelude::*;
+#[pymodule]
+fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
+    Ok(())
+}
 
 //creates python bindings that will be used for parsing fastq files
 #[pyfunction]
@@ -17,7 +24,7 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
             }
             return Ok(read_vector);
         }
-        Err(_e) => {
+        Err(_) => {
             //code panics for now. Will add better error handling
             panic!("Something went wrong during finding the file")
         }
@@ -28,26 +35,30 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
     let mut writer = fastq::Writer::to_file(file_name).unwrap();
 
     matrix = remove_zeros(matrix);
+    let string_matrix = translate_numeric(matrix).unwrap();
+    println!("{:?}",string_matrix);
     Ok(())
 }
 
-fn translate_numeric(matrix:Vec<Vec<u8>>) -> Result<Vec<String>>{
-    let mut string_matrix = vec![];
-    for row in matrix{
-        let mut array:[u8; row.len()] = row.try_into().expect("Error converting to array");
-        for i in range(0, array.len()){
-            match array[i]{
-                1 => array[i] = 65,
-                2 => array[i] = 67,
-                3 => array[i] = 71,
-                4 => array[i] = 84,
+fn translate_numeric(matrix:Vec<Vec<u8>>) -> Result<Vec<String>,&'static str >{
+    println!("translating matrix");
+    let string_matrix:Result<Vec<String>, _> = matrix
+        .into_par_iter()
+        .map(|mut row|{
+
+        for i in 0..row.len(){
+            match row[i]{
+                1 => row[i] = 65,
+                2 => row[i] = 67,
+                3 => row[i] = 71,
+                4 => row[i] = 84,
                 _ => return Err("Invalid value in matrix")
-            }   
+            }
         }
-        let string_row = byte_to_string(&array);
-        string_matrix.push(string_row);
-    }
-    Ok(string_matrix)
+        Ok(byte_to_string(&row))
+
+        }).collect();
+    string_matrix
 }
 
 fn remove_zeros(matrix: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
@@ -68,8 +79,3 @@ fn byte_to_string(byte_array: &[u8]) -> String {
     std::str::from_utf8(byte_array).unwrap().to_string()
 }
  
-#[pymodule]
-fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
-    Ok(())
-}

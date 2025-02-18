@@ -325,39 +325,8 @@ if __name__ == "__main__":
     [solids_before, solids_after, corrected_reads_array, votes] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
-    # check votes
-    # ray.get(
-    #     [
-    #         check_votes.remote(votes[batch_idx : batch_idx + batch_size])
-    #         for batch_idx in range(0, len(votes), batch_size)
-    #     ]
-    # )
-    put_start_time = time.perf_counter()
-    corrected_reads_array_ref = ray.put(corrected_reads_array)
-    sorted_kmer_np_ref = ray.put(sorted_kmer_np)
-    offsets_ref = [
-        ray.put(offsets[batch_idx : batch_idx + batch_size])
-        for batch_idx in range(0, len(offsets), batch_size)
-    ]
-    put_end_time = time.perf_counter()
-    print(
-        f"Time it takes to put reads, kmer, and offsets into object store: {put_end_time - put_start_time}"
-    )
-
+   
     # entry_ids = [entry.remote(corrected_reads_array_ref, kmer_len,sorted_kmer_np_ref, offsets_ref[batch_idx // batch_size], 4, 2) for batch_idx in range(0, len(offsets), batch_size)]
-    #
-    # print("Entries has been sent")
-    #
-    # while len(entry_ids) > 0:
-    #     ready_ids, remaining_ids = ray.wait(entry_ids, num_returns=1, timeout=None)
-    #
-    #     print(f"{len(ready_ids)} is done")
-    #     for ready_id in ready_ids:
-    #
-    #         res = ray.get(ready_id)
-    #
-    #     entry_ids = remaining_ids
-    # print("One sided in the host environment is done")
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
@@ -368,55 +337,14 @@ if __name__ == "__main__":
         f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}"
     )
 
-    # still takes a lot of time serializing the sequence data. How about ray.wait for this?
-    put_object_starttime = time.perf_counter()
-    # references = [
-    #     ray.put(fastq_data_list[batch_idx : batch_idx + batch_size])
-    #     for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
-    # ]
-
-    put_object_end_time = time.perf_counter()
-    print(
-        f"time it takes to serialize sequence objects: {put_object_end_time - put_object_starttime}"
-    )
-
-    # assign sequence takes a lot of time
-    # new_sequences = ray.get(
-    #     [
-    #         assign_sequence.remote(
-    #             corrected_2d_reads_array[batch_idx : batch_idx + batch_size],
-    #             references[batch_idx // batch_size],
-    #         )
-    #         for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
-    #     ]
-    # )
-    # flat_new_sequences = []
-    # for sequence in new_sequences:
-    #     flat_new_sequences.extend(sequence)
-    #
-    # print(f"new sequences length {len(flat_new_sequences)}")
     write_file_starttime = time.perf_counter()
-    # # print(flat_new_sequences)
-    # with open("genetic-assets/please.fastq", "w") as output_handle:
-    #     SeqIO.write(flat_new_sequences, output_handle, "fastq")
+
+    fastq_data_list = fastq_parser.write_fastq_file('please.fastq', corrected_2d_reads_array)
 
     write_file_endtime = time.perf_counter()
     print(
         f"time it takes to write reads back to fastq file: {write_file_endtime - write_file_starttime}"
     )
-    # #flattens the array
-    # flattened_sequences = [sequence for sub in new_sequences for sequence in sub]
-    # with open("genetic-assets/corrected_output_test.fastq", "w") as output_handle:
-    #      SeqIO.write(flattened_sequences, output_handle, 'fastq')
-
-    # visuals
-    # plt.figure(figsize=(12, 6))
-    # sns.histplot(pd_kmers['count'], bins=60, kde=True, color='blue', alpha=0.7)
-    # plt.title('K-mer Coverage Histogram')
-    # plt.xlabel('K-mer Occurrence (Multiplicity)')
-    # plt.ylabel('Density (Number of k-mers with same multiplicity)')
-    # plt.grid(True)
-    # plt.show()
 
     end_time = time.perf_counter()
     print(f"Elapsed time is {end_time - start_time}")
