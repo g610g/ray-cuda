@@ -3,6 +3,7 @@ import os
 import sys
 import cudf
 import numpy as np
+import fastq_parser
 from Bio import SeqIO, Seq
 from host.one_sided import entry
 from shared_core_correction import *
@@ -96,8 +97,9 @@ def check_corrections(kmers_tracker):
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def test_cuda_array_context():
-    my_arr = np.zeros((512, 10), dtype="uint16")
-    my_aux_arr = np.zeros((512, 10), dtype="uint16")
+    
+    my_arr = np.zeros((512, 21), dtype="uint16")
+    my_aux_arr = np.zeros((512, 21), dtype="uint16")
 
     for idx in range(10):
         my_arr[idx][0] = idx + 1
@@ -270,25 +272,29 @@ if __name__ == "__main__":
     #     for batch_idx in range(0, len(zeros), test_batch_size)
     # ]
     # does converting it into list and storing into memory has some implications as compared to represent it as a generator?
-    with open(sys.argv[1]) as handle:
-        fastq_data = SeqIO.parse(handle, "fastq")
-        fastq_data_list = list(fastq_data)
-        reads = [str(data.seq) for data in fastq_data_list]
+    # with open(sys.argv[1]) as handle:
+    #     fastq_data = SeqIO.parse(handle, "fastq")
+    #     fastq_data_list = list(fastq_data)
+    #     reads = [str(data.seq) for data in fastq_data_list]
 
+    reads = fastq_parser.parse_fastq_file(sys.argv[1])
     transform_to_string_end_time = time.perf_counter()
     print(
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
 
     kmer_len = 18
-
+    kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads))
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads))
     reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads))
     # pd_kmers = kmer_occurences.to_pandas()
     kmer_lens = ray.get(gpu_extractor.give_lengths_of_kmers.remote(reads))
-
+    kmer_extract_end_time = time.perf_counter()
+    print(
+        f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
+    )
     print(
         f"number of reads is equal to number of rows in the offset:{offsets.shape[0]}"
     )
@@ -320,12 +326,12 @@ if __name__ == "__main__":
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
     # check votes
-    ray.get(
-        [
-            check_votes.remote(votes[batch_idx : batch_idx + batch_size])
-            for batch_idx in range(0, len(votes), batch_size)
-        ]
-    )
+    # ray.get(
+    #     [
+    #         check_votes.remote(votes[batch_idx : batch_idx + batch_size])
+    #         for batch_idx in range(0, len(votes), batch_size)
+    #     ]
+    # )
     put_start_time = time.perf_counter()
     corrected_reads_array_ref = ray.put(corrected_reads_array)
     sorted_kmer_np_ref = ray.put(sorted_kmer_np)
@@ -364,34 +370,35 @@ if __name__ == "__main__":
 
     # still takes a lot of time serializing the sequence data. How about ray.wait for this?
     put_object_starttime = time.perf_counter()
-    references = [
-        ray.put(fastq_data_list[batch_idx : batch_idx + batch_size])
-        for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
-    ]
+    # references = [
+    #     ray.put(fastq_data_list[batch_idx : batch_idx + batch_size])
+    #     for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
+    # ]
+
     put_object_end_time = time.perf_counter()
     print(
         f"time it takes to serialize sequence objects: {put_object_end_time - put_object_starttime}"
     )
 
     # assign sequence takes a lot of time
-    new_sequences = ray.get(
-        [
-            assign_sequence.remote(
-                corrected_2d_reads_array[batch_idx : batch_idx + batch_size],
-                references[batch_idx // batch_size],
-            )
-            for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
-        ]
-    )
-    flat_new_sequences = []
-    for sequence in new_sequences:
-        flat_new_sequences.extend(sequence)
-
-    print(f"new sequences length {len(flat_new_sequences)}")
+    # new_sequences = ray.get(
+    #     [
+    #         assign_sequence.remote(
+    #             corrected_2d_reads_array[batch_idx : batch_idx + batch_size],
+    #             references[batch_idx // batch_size],
+    #         )
+    #         for batch_idx in range(0, len(corrected_2d_reads_array), batch_size)
+    #     ]
+    # )
+    # flat_new_sequences = []
+    # for sequence in new_sequences:
+    #     flat_new_sequences.extend(sequence)
+    #
+    # print(f"new sequences length {len(flat_new_sequences)}")
     write_file_starttime = time.perf_counter()
-    # print(flat_new_sequences)
-    with open("genetic-assets/please.fastq", "w") as output_handle:
-        SeqIO.write(flat_new_sequences, output_handle, "fastq")
+    # # print(flat_new_sequences)
+    # with open("genetic-assets/please.fastq", "w") as output_handle:
+    #     SeqIO.write(flat_new_sequences, output_handle, "fastq")
 
     write_file_endtime = time.perf_counter()
     print(

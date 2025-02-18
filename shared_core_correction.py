@@ -1,9 +1,9 @@
 from numba import cuda
 from shared_helpers import (
     all_solid_base,
-    backward_base,
     identify_solid_bases,
     forward_base,
+    backward_base,
     identify_trusted_regions,
     predeccessor,
     predeccessor_v2,
@@ -253,7 +253,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
         bases = cuda.local.array(4, dtype="uint8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
-        local_max_votes = cuda.local.array(4, dtype="uint16")
+        local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
         maxIters = 4
         min_vote = 3
         seqlen = end - start
@@ -277,6 +277,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 for idx in range(seqlen):
                     solids[idx] = -1
                     aux_corrections[idx] = 0
+                    local_read_aux[idx] = local_read[idx]
 
                 corrections_made = one_sided_v2(
                     local_read,
@@ -292,6 +293,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                     bases,
                     nerr,
                     distance,
+                    local_read_aux,
                 )
 
                 # returns -1 means all bases are solid
@@ -304,7 +306,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 # a correction has been recorded and put the corrections in local read
                 else:
                     for i in range(seqlen):
-                        if aux_corrections[i] != 0:
+                        if aux_corrections[i]  > 0:
                             local_read[i] = aux_corrections[i]
 
             # start voting refinement here
@@ -483,6 +485,7 @@ def one_sided_v2(
     bases,
     max_corrections,
     distance,
+    local_read_aux,
 ):
 
     corrections_made = 0
@@ -501,7 +504,7 @@ def one_sided_v2(
     if all_solid_base(solids, seq_len):
         return -1
 
-    for region in range(regions_count):
+    for region in range(0, regions_count):
         right_mer_idx = region_indices[region][1]
         right_orientation_idx = -1
         last_position = -1
@@ -589,86 +592,92 @@ def one_sided_v2(
         # endfor rkmer_idx + 1 to seq_len
 
         # for left orientation
-        # lkmer_idx = region_indices[region][0]
-        # if lkmer_idx > 0:
-        #
-        #     if right_orientation_idx >= 0:
-        #         last_position = right_orientation_idx
-        #     else:
-        #         last_position = -1
-        #
-        #     num_corrections = 0
-        #     pos = lkmer_idx - 1
-        #     while pos >= 0:
-        #         # the current base is trusted
-        #         if solids[pos] == 1:
-        #             break
-        #         done = False
-        #         if pos == lkmer_idx - 1:
-        #             copy_kmer(ascii_kmer, original_read, pos, pos + kmer_len)
-        #         else:
-        #             backward_base(ascii_kmer, original_read[pos], kmer_len)
-        #
-        #         num_bases = select_mutations(
-        #             spectrum, bases, ascii_kmer, kmer_len, 0, selected_bases
-        #         )
-        #
-        #         # apply correction
-        #         if num_bases == 1:
-        #             aux_corrections[pos] = selected_bases[0]
-        #             ascii_kmer[0] = selected_bases[0]
-        #             corrections_made += 1
-        #             done = True
-        #         else:
-        #             best_base = -1
-        #             best_base_occurence = -1
-        #             for idx in range(0, num_bases):
-        #                 copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
-        #                 if predeccessor_v2(
-        #                     kmer_len,
-        #                     original_read,
-        #                     aux_kmer,
-        #                     spectrum,
-        #                     pos,
-        #                     selected_bases[idx],
-        #                     distance,
-        #                 ):
-        #                     copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
-        #                     aux_kmer[0] = selected_bases[idx]
-        #                     candidate = transform_to_key(aux_kmer, kmer_len)
-        #                     aux_occurence = give_kmer_multiplicity(spectrum, candidate)
-        #                     if aux_occurence > best_base_occurence:
-        #                         best_base_occurence = aux_occurence
-        #                         best_base = selected_bases[idx]
-        #
-        #             if best_base > 0 and best_base_occurence > 0:
-        #                 aux_corrections[pos] = best_base
-        #                 ascii_kmer[0] = best_base
-        #                 corrections_made += 1
-        #                 done = True
-        #         # checking corrections that have done
-        #         if done:
-        #             if last_position < 0:
-        #                 last_position = pos
-        #             if last_position - pos < kmer_len:
-        #                 num_corrections += 1
-        #
-        #                 # revert kmer back if corrections done exceeds max_corrections
-        #                 if num_corrections > max_corrections:
-        #                     for base_idx in range(pos, last_position + 1):
-        #                         aux_corrections[base_idx] = 0
-        #
-        #                     corrections_made -= num_corrections
-        #                     break
-        #             else:
-        #                 last_position = pos
-        #                 num_corrections = 0
-        #             pos -= 1
-        #             continue
-        #
-        #         # the correction for the current base is done == False
-        #         break
-        #     # endfor lkmer_idx to 0
+        lkmer_idx = region_indices[region][0]
+        if lkmer_idx > 0:
+
+            copy_kmer(local_read_aux, original_read, 0, seq_len)
+            last_position = right_orientation_idx
+
+            num_corrections = 0
+            pos = lkmer_idx - 1
+            while pos >= 0:
+                # the current base is trusted
+                if solids[pos] == 1:
+                    break
+
+                done = False
+
+                if pos == (lkmer_idx - 1):
+                    copy_kmer(ascii_kmer, original_read, pos, pos + kmer_len)
+                else:
+                    copy_kmer(ascii_kmer, local_read_aux, pos, pos + kmer_len)
+
+                kmer = transform_to_key(ascii_kmer, kmer_len)
+                if not in_spectrum(spectrum, kmer):
+                    num_bases = select_mutations(
+                        spectrum, bases, ascii_kmer, kmer_len, 0, selected_bases
+                    )
+
+                    # apply correction
+                    if num_bases == 1:
+                        aux_corrections[pos] = selected_bases[0]
+                        local_read_aux[pos] = selected_bases[0]
+                        corrections_made += 1
+                        done = True
+
+                    else:
+                        best_base = -1
+                        best_base_occurence = -1
+                        for idx in range(0, num_bases):
+                            copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
+                            if predeccessor_v2(
+                                kmer_len,
+                                local_read_aux,
+                                aux_kmer,
+                                spectrum,
+                                pos,
+                                selected_bases[idx],
+                                distance,
+                            ):
+                                copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
+                                aux_kmer[0] = selected_bases[idx]
+                                candidate = transform_to_key(aux_kmer, kmer_len)
+                                aux_occurence = give_kmer_multiplicity(spectrum, candidate)
+                                if aux_occurence > best_base_occurence:
+                                    best_base_occurence = aux_occurence
+                                    best_base = selected_bases[idx]
+
+                        if best_base > 0 and best_base_occurence > 0:
+                            aux_corrections[pos] = best_base
+                            local_read_aux[pos] = best_base
+                            corrections_made += 1
+                            done = True
+                    # checking corrections that have done
+                    if done:
+                        if last_position < 0:
+                            last_position = pos
+                        if last_position - pos < kmer_len:
+                            num_corrections += 1
+
+                            # revert kmer back if corrections done exceeds max_corrections
+                            if num_corrections > max_corrections:
+                                for base_idx in range(pos, last_position + 1):
+                                    aux_corrections[base_idx] = 0
+
+                                corrections_made -= num_corrections
+                                break
+                        else:
+                            last_position = pos
+                            num_corrections = 0
+                        pos -= 1
+                        continue
+
+                    # the correction for the current base is done == False
+                    pos -= 1
+                    break
+                #endif not in_spectrum
+                pos -= 1
+        # endfor lkmer_idx to 0
 
     # endfor regions_count
     return corrections_made

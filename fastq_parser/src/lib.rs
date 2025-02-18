@@ -1,12 +1,7 @@
-use bio::io::fastq;
+use bio::io::fastq::{self, Record};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
-}
+use std::{thread, time::*};
 
 //creates python bindings that will be used for parsing fastq files
 #[pyfunction]
@@ -22,23 +17,59 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
             }
             return Ok(read_vector);
         }
-        Err(e) => {
+        Err(_e) => {
             //code panics for now. Will add better error handling
             panic!("Something went wrong during finding the file")
         }
     }
+}
+#[pyfunction]
+    fn write_fastq_file(file_name:String, mut matrix:Vec<Vec<u8>>) -> PyResult<()>{
+    let mut writer = fastq::Writer::to_file(file_name).unwrap();
 
-    Err(PyErr::new::<PyTypeError, _>("Something went wrong"))
+    matrix = remove_zeros(matrix);
+    Ok(())
 }
 
+fn translate_numeric(matrix:Vec<Vec<u8>>) -> Result<Vec<String>>{
+    let mut string_matrix = vec![];
+    for row in matrix{
+        let mut array:[u8; row.len()] = row.try_into().expect("Error converting to array");
+        for i in range(0, array.len()){
+            match array[i]{
+                1 => array[i] = 65,
+                2 => array[i] = 67,
+                3 => array[i] = 71,
+                4 => array[i] = 84,
+                _ => return Err("Invalid value in matrix")
+            }   
+        }
+        let string_row = byte_to_string(&array);
+        string_matrix.push(string_row);
+    }
+    Ok(string_matrix)
+}
+
+fn remove_zeros(matrix: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    let mut new_matrix = vec![];
+    for row in matrix {
+        let mut new_row = vec![];
+        for element in row {
+            if element != 0 {
+                new_row.push(element);
+            }
+        }
+        new_matrix.push(new_row);
+    }
+    new_matrix
+}
 //this function unwraps for now. Add better error handling
 fn byte_to_string(byte_array: &[u8]) -> String {
     std::str::from_utf8(byte_array).unwrap().to_string()
 }
-
+ 
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
     Ok(())
 }

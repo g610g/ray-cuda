@@ -1,3 +1,4 @@
+from math import e
 import unittest
 import numpy as np
 from numpy import random
@@ -134,6 +135,15 @@ class OneSidedTests(unittest.TestCase):
                 apply_voting_result(local_read, votes, seq_len, bases, max_votes)
 
         assert_array_equal(local_read, correct_read)
+
+    def test_backward_base(self):
+        kmer_length = 13
+        local_read = [1, 4, 2, 1, 2, 4, 2, 1, 3, 4, 2, 1, 2, 3, 4, 3, 2, 1]
+        aux_kmer = np.zeros(kmer_length, dtype='uint8')
+        copy_kmer(aux_kmer, local_read, 3, 3 + kmer_length)
+        backward_base(aux_kmer, local_read[2], kmer_length)
+        print(aux_kmer, local_read[2: 2 + kmer_length])
+        assert_array_equal(local_read[2: 2 + kmer_length], aux_kmer)
 
     # def test_forward_base(self):
     #     local_read = np.array([4, 4, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2, 1, 3, 2, 1], dtype='uint8')

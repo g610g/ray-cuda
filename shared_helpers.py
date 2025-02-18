@@ -1,6 +1,4 @@
-from numpy import dtype
 import cudf
-import kmer
 from numba import cuda
 from helpers import in_spectrum, transform_to_key, mark_solids_array, copy_solids
 from Bio import Seq
@@ -309,20 +307,18 @@ def predeccessor_v2(
     distance,
 ):
     ipos = target_pos - 1
-    if ipos <= 0 or distance <= 0:
+    if ipos < 0 or distance <= 0:
         return True
     spos = max(0, ipos - distance)
-    backward_base(aux_kmer, local_read[ipos], kmer_length)
-    counter = 2
-    idx = ipos - 1
+    counter = 1
+    idx = ipos
     while idx >= spos:
-        if counter < kmer_length:
-            # copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
-            backward_base(aux_kmer, local_read[idx], kmer_length)
-            aux_kmer[counter] = alternative_base
-            candidate = transform_to_key(aux_kmer, kmer_length)
-            if not in_spectrum(kmer_spectrum, candidate):
-                return False
+        copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
+        # backward_base(aux_kmer, local_read[idx], kmer_length)
+        aux_kmer[counter] = alternative_base
+        candidate = transform_to_key(aux_kmer, kmer_length)
+        if not in_spectrum(kmer_spectrum, candidate):
+            return False
         counter += 1
         idx -= 1
     return True
@@ -374,11 +370,8 @@ def test_copying(arr1):
 def test_slice_array(arr, aux_arr_storage, arr_len):
     threadIdx = cuda.grid(1)
     if threadIdx <= arr_len:
-
-        # testing warp divergence conditional statements
-        if arr[threadIdx][0] != 0:
-            aux_arr_storage[threadIdx][0] = 10 // arr[threadIdx][0]
-        return
+        local_kmer = cuda.local.array(21, dtype="uint8")
+        
 
 
 @cuda.jit(device=True)
@@ -410,15 +403,10 @@ def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases)
 # backward the base or shifts bases to the left
 @cuda.jit(device=True)
 def backward_base(ascii_kmer, base, kmer_length):
-    idx = kmer_length - 1
-    while idx >= 0:
-        if idx == 0:
-            ascii_kmer[idx] = base
-        else:
-            ascii_kmer[idx] = ascii_kmer[idx - 1]
-        idx -= 1
+    for idx in range(kmer_length - 1, 0, -1):
+        ascii_kmer[idx] = ascii_kmer[(idx - 1)]
 
-
+    ascii_kmer[0] = base
 # forward the base or shifts bases to the right
 @cuda.jit(device=True)
 def forward_base(ascii_kmer, base, kmer_length):
