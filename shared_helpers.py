@@ -184,7 +184,10 @@ def back_sequence_kernel(reads, offsets, reads_result):
     local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
     if threadIdx < offsets.shape[0]:
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        seqlen = end - start
+
         to_local_reads(reads, local_reads, start, end)
+        to_decimal_ascii(local_reads, seqlen)
 
         # copy the assigned read for this thread into the 2d reads_result
         for idx in range(end - start):
@@ -415,3 +418,19 @@ def forward_base(ascii_kmer, base, kmer_length):
             ascii_kmer[idx] = base
         else:
             ascii_kmer[idx] = ascii_kmer[idx + 1]
+
+@cuda.jit(device=True)
+def to_decimal_ascii(local_read, seqlen):
+    
+    for idx in range(seqlen):
+        if local_read[idx] == 1:
+            local_read[idx] = 65
+        elif local_read[idx] == 2:
+            local_read[idx] = 67
+        elif local_read[idx] == 3:
+            local_read[idx] = 71
+        elif local_read[idx] == 4:
+            local_read[idx] = 84
+        else:
+            local_read[idx] = 0
+

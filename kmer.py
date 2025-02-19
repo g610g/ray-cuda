@@ -8,7 +8,9 @@ import cudf
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
         self.kmer_length = kmer_length
-        self.translation_table = str.maketrans({"A": "1", "C": "2", "G": "3", "T": "4"})
+        self.translation_table = str.maketrans(
+            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"}
+        )
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -26,22 +28,69 @@ class KmerExtractorGPU:
         ).to_numpy()
         return offsets
 
-    def transform_reads_2_1d(self, reads):
+    def transform_reads_2_1d_batch(self, reads, batch_size):
+        result = np.array([])
+        for i in range(0, len(reads), batch_size):
+            read_df = cudf.DataFrame({"reads": reads[i : i + batch_size]})
+            result = np.append(
+                result,
+                read_df["reads"]
+                .str.findall(".")
+                .explode()
+                .str.translate(self.translation_table)
+                .astype("uint8")
+                .to_numpy()
+            )
+
+        return result
+
+    def transform_reads_2_1d(self, reads, batch_size):
         read_df = cudf.DataFrame({"reads": reads})
+        if len(reads) > batch_size :
+            return self.transform_reads_2_1d_batch(reads, batch_size) 
         return (
-            read_df["reads"]
-            .str.findall(".")
-            .explode()
-            .str.translate(self.translation_table)
-            .astype("uint8")
-            .to_numpy()
+                read_df["reads"]
+                .str.findall(".")
+                .explode()
+                .str.translate(self.translation_table)
+                .astype("uint8")
+                .to_numpy()
         )
 
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
 
-    def calculate_kmers_multiplicity(self, reads):
+    def calculate_kmers_multiplicity_batch(self, reads, batch_size):
+        all_results = []
+        for i in range(0, len(reads), batch_size):
+            read_s = cudf.Series(reads[i : i + batch_size], name="reads")
+            read_df = read_s.to_frame()
+            read_df["translated"] = read_df["reads"].str.translate(
+                self.translation_table
+            )
+            ngram_kmers = read_df["translated"].str.character_ngrams(
+                self.kmer_length, True
+            )
+            exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
+            numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
+            result_frame = numeric_ngrams.value_counts().reset_index()
+            all_results.append(result_frame)
+
+        final_result = (
+            cudf.concat(all_results).groupby("translated").sum().reset_index()
+        )
+        final_result.columns = ["translated", "multiplicity"]
+        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        print(f"final result shape is: {final_result.shape}")
+        print(f"final result is: {final_result}")
+        return final_result
+
+    def calculate_kmers_multiplicity(self, reads, batch_size):
+
+        if len(reads) > batch_size:
+            return self.calculate_kmers_multiplicity_batch(reads, batch_size)
+
         read_s = cudf.Series(reads, name="reads")
         read_df = read_s.to_frame()
 

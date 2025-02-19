@@ -11,6 +11,7 @@ from shared_helpers import (
     successor_v2,
     copy_kmer,
     select_mutations,
+    to_decimal_ascii,
 )
 from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
 
@@ -326,7 +327,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 break
             elif max_vote >= min_vote:
                 apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
-        # # endfor idx to max_corrections
+        # endfor idx to max_corrections
 
         # copies back corrected local read into global memory stored reads
         for idx in range(seqlen):

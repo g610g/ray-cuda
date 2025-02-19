@@ -1,8 +1,7 @@
 use bio::io::fastq::{self, Record};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use std::{thread, time::*};
-use numpy::{PyArray2, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray2, PyArrayMethods};
 
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -26,25 +25,57 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
             return Ok(read_vector);
         }
         Err(_) => {
-            //code panics for now. Will add better error handling
-            panic!("Something went wrong during finding the file")
+            return Err(PyErr::new::<PyTypeError, _>("Source fastq file name cannot be located"));
         }
     }
 }
 #[pyfunction]
-fn write_fastq_file(file_name:String, matrix:&Bound<'_, PyArray2<u8>>) -> PyResult<()>{
-    let mut writer = fastq::Writer::to_file(file_name).unwrap();
+fn write_fastq_file(dst_filename:String, src_filename:String, matrix:&Bound<'_, PyArray2<u8>>) -> PyResult<()>{
+    let mut writer = match fastq::Writer::to_file(dst_filename){
+        Ok(writer) => writer,
+        Err(_)  => {
+            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
+        }
+    };
 
-    unsafe {
-        let np_matrix = matrix.as_array();
-        let result :Result<Vec<String>, _> = np_matrix
+    let reader = match fastq::Reader::from_file(src_filename) {
+        Ok(reader) => reader,
+        Err(_) => {
+            return Err(PyErr::new::<PyTypeError, _>("Destination file name cannot be located"));
+        }
+    };
+
+    let np_matrix = unsafe {
+        matrix.as_array()
+    };
+    let result :Result<Vec<String>, _> = np_matrix
             .rows()
             .into_iter().map(|row|{
                 let vector_row = row.to_vec();
                 byte_to_string(&vector_row)
         }).collect();
-    };
 
+    match result {
+        Ok(rows_as_strings) => {
+            for (record, row) in reader.records().zip(rows_as_strings.iter()){
+
+                if let Ok(record) = record {
+
+                    let new_record =  Record::with_attrs(record.id(), record.desc(), row.as_bytes(),record.qual());
+
+                    if let Err(_) = writer.write_record(&new_record) {
+                        return Err(PyErr::new::<PyTypeError, _>("Error writing new record to the file"));
+                    }
+                }
+                else {
+                    return Err(PyErr::new::<PyTypeError, _>("Something went wrong during extracting record"));
+                }
+            }
+        },
+        Err(e) => {
+            return Err(e);
+        }
+    }
     Ok(())
 }
 
