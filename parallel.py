@@ -264,18 +264,6 @@ if __name__ == "__main__":
         print(usage)
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
-    # remove this after testing
-    # zeros = [0] * 50000
-    # test_batch_size = len(zeros) // cpus_detected
-    # remaining_refs = [
-    #     increment_array.remote(zeros[batch_idx : test_batch_size + batch_idx])
-    #     for batch_idx in range(0, len(zeros), test_batch_size)
-    # ]
-    # does converting it into list and storing into memory has some implications as compared to represent it as a generator?
-    # with open(sys.argv[1]) as handle:
-    #     fastq_data = SeqIO.parse(handle, "fastq")
-    #     fastq_data_list = list(fastq_data)
-    #     reads = [str(data.seq) for data in fastq_data_list]
 
     reads = fastq_parser.parse_fastq_file(sys.argv[1])
     transform_to_string_end_time = time.perf_counter()
