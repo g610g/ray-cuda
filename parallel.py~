@@ -243,6 +243,9 @@ def ping_resources():
 
 
 if __name__ == "__main__":
+    # (arr, aux_arr) = ray.get(test_cuda_array_context.remote())
+    # for idx in range(10):
+    #     print(aux_arr[idx][0])
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -262,7 +265,7 @@ if __name__ == "__main__":
     )
     print(f"Length of reads: {len(reads)}")
 
-    kmer_len = 18
+    kmer_len = 13
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3000000))

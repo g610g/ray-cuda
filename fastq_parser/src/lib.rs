@@ -1,13 +1,45 @@
+use std::collections::hash_map::HashMap;
 use bio::io::fastq::{self, Record};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use numpy::{PyArray2, PyArrayMethods};
+use bloomfilter::Bloom;
 
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     Ok(())
+}
+
+#[pyfunction]
+fn extract_kmers(reads:Vec<String>, kmer_length: usize) -> PyResult<()> {
+    let mut bloom = match Bloom::new_for_fp_rate(1000000,0.001 ){
+        Ok(bloom) => bloom,
+        Err(_) => {return Err(PyErr::new::<PyTypeError, _>("Something went wrong initiating bloom filter"));
+        }
+    };
+    let mut hash_map = HashMap::new();
+
+    reads.iter().for_each(|read|{
+        let kmers = generate_kmers(read, &kmer_length);
+        kmers.iter().for_each(|kmer|{
+
+            if bloom.check(kmer){
+                hash_map.insert(kmer.clone(), 0);
+            }else{
+                bloom.set(kmer);
+            }
+        });
+    });
+    Ok(())
+}
+fn generate_kmers(read:&str, kmer_length:&usize) -> Vec<String>{
+    read.chars()
+    .collect::<Vec<char>>()
+    .windows(*kmer_length)
+    .map(|x| x.iter().collect::<String>())
+    .collect()
 }
 
 //creates python bindings that will be used for parsing fastq files

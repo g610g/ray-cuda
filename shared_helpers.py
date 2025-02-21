@@ -431,6 +431,8 @@ def to_decimal_ascii(local_read, seqlen):
             local_read[idx] = 71
         elif local_read[idx] == 4:
             local_read[idx] = 84
+        elif local_read[idx] == 5:
+            local_read[idx] = 78
         else:
             local_read[idx] = 0
 

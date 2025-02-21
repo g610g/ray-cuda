@@ -1,3 +1,4 @@
+from os import read
 import ray
 import math
 import numpy as np
@@ -8,9 +9,7 @@ import cudf
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
         self.kmer_length = kmer_length
-        self.translation_table = str.maketrans(
-            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"}
-        )
+        self.translation_table = str.maketrans({"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"})
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -19,7 +18,8 @@ class KmerExtractorGPU:
         return exploded_kmers.value_counts()
 
     def get_offsets(self, reads):
-        read_df = cudf.DataFrame({"reads": reads})
+        read_s = cudf.Series(reads, name="reads")
+        read_df = read_s.to_frame()
         str_lens = read_df["reads"].str.len()
         end_indices = str_lens.cumsum()
         start_indices = end_indices.shift(1, fill_value=0)
@@ -29,11 +29,11 @@ class KmerExtractorGPU:
         return offsets
 
     def transform_reads_2_1d_batch(self, reads, batch_size):
-        result = np.array([])
+        result = []
         for i in range(0, len(reads), batch_size):
-            read_df = cudf.DataFrame({"reads": reads[i : i + batch_size]})
-            result = np.append(
-                result,
+            read_s = cudf.Series(reads[i : i + batch_size], name="reads")
+            read_df = read_s.to_frame()
+            result.append(
                 read_df["reads"]
                 .str.findall(".")
                 .explode()
@@ -42,30 +42,35 @@ class KmerExtractorGPU:
                 .to_numpy()
             )
 
-        return result
+        return np.concatenate(result)
 
     def transform_reads_2_1d(self, reads, batch_size):
-        read_df = cudf.DataFrame({"reads": reads})
-        if len(reads) > batch_size :
-            return self.transform_reads_2_1d_batch(reads, batch_size) 
+        if len(reads) > batch_size:
+            return self.transform_reads_2_1d_batch(reads, batch_size)
+
+        read_s = cudf.Series(reads, name="reads")
+        read_df = read_s.to_frame()
         return (
-                read_df["reads"]
-                .str.findall(".")
-                .explode()
-                .str.translate(self.translation_table)
-                .astype("uint8")
-                .to_numpy()
+            read_df["reads"]
+            .str.findall(".")
+            .explode()
+            .str.translate(self.translation_table)
+            .astype("uint8")
+            .to_numpy()
         )
 
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
 
+    # store the dataframe as state of this worker to be used by downstream tasks
     def calculate_kmers_multiplicity_batch(self, reads, batch_size):
         all_results = []
         for i in range(0, len(reads), batch_size):
             read_s = cudf.Series(reads[i : i + batch_size], name="reads")
             read_df = read_s.to_frame()
+            # read_df['clean_reads'] = read_df['reads'].str.replace('N', '')
+
             read_df["translated"] = read_df["reads"].str.translate(
                 self.translation_table
             )
@@ -78,7 +83,7 @@ class KmerExtractorGPU:
             all_results.append(result_frame)
 
         final_result = (
-            cudf.concat(all_results).groupby("translated").sum().reset_index()
+            cudf.concat(all_results, ignore_index=True).groupby("translated").sum().reset_index()
         )
         final_result.columns = ["translated", "multiplicity"]
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
@@ -94,7 +99,11 @@ class KmerExtractorGPU:
         read_s = cudf.Series(reads, name="reads")
         read_df = read_s.to_frame()
 
-        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
+        read_df['clean_reads'] = read_df['reads'].str.replace('N', '')
+
+        read_df["translated"] = read_df["clean_reads"].str.translate(
+            self.translation_table
+        )
 
         ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
 
@@ -106,21 +115,6 @@ class KmerExtractorGPU:
 
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         return result_frame
-
-    def give_lengths_of_kmers(self, reads):
-        read_s = cudf.Series(reads, name="reads")
-
-        read_df = read_s.to_frame()
-
-        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
-        ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
-
-        exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
-        kmer_lens = exploded_ngrams.str.len().reset_index(drop=True)
-        kmer_lens_df = kmer_lens.to_frame()
-        kmer_lens_df.columns = ["lengths"]
-
-        return kmer_lens_df
 
 
 # todo:refactor

@@ -311,6 +311,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                             local_read[i] = aux_corrections[i]
 
             # start voting refinement here
+
             max_vote = cast_votes(
                 local_read,
                 voting_matrix,
@@ -321,6 +322,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 kmer_spectrum,
                 aux_kmer,
             )
+
             max_votes[threadIdx][nerr - 1] = max_vote
             # #the read is error free at this point
             if max_vote == 0:
