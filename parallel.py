@@ -131,17 +131,17 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     bpg = offsets.shape[0] // tbp
 
     # invoking the two sided correction kernel
-    two_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum,
-        dev_reads_1d,
-        dev_offsets,
-        kmer_len,
-    )
+    # two_sided_kernel[bpg, tbp](
+    #     dev_kmer_spectrum,
+    #     dev_reads_1d,
+    #     dev_offsets,
+    #     kmer_len,
+    # )
 
     # voting refinement is done within the one_sided_kernel
-    # one_sided_kernel[bpg, tbp](
-    #     dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
-    # )
+    one_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
+    )
 
     end.record()
     end.synchronize()
