@@ -26,6 +26,7 @@ class KmerExtractorGPU:
         offsets = cudf.DataFrame(
             {"start_indices": start_indices, "end_indices": end_indices}
         ).to_numpy()
+        print(offsets)
         return offsets
 
     def transform_reads_2_1d_batch(self, reads, batch_size):
@@ -67,13 +68,14 @@ class KmerExtractorGPU:
     def calculate_kmers_multiplicity_batch(self, reads, batch_size):
         all_results = []
         for i in range(0, len(reads), batch_size):
+
             read_s = cudf.Series(reads[i : i + batch_size], name="reads")
             read_df = read_s.to_frame()
-            # read_df['clean_reads'] = read_df['reads'].str.replace('N', '')
 
             read_df["translated"] = read_df["reads"].str.translate(
                 self.translation_table
             )
+
             ngram_kmers = read_df["translated"].str.character_ngrams(
                 self.kmer_length, True
             )
@@ -99,9 +101,8 @@ class KmerExtractorGPU:
         read_s = cudf.Series(reads, name="reads")
         read_df = read_s.to_frame()
 
-        read_df['clean_reads'] = read_df['reads'].str.replace('N', '')
 
-        read_df["translated"] = read_df["clean_reads"].str.translate(
+        read_df["translated"] = read_df["reads"].str.translate(
             self.translation_table
         )
 

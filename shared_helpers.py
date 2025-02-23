@@ -23,11 +23,17 @@ def check_tracker(
 
 @cuda.jit(device=True)
 def identify_solid_bases(
-    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size
+    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size, aux_kmer
 ):
 
     for idx in range(0, size + 1):
         copy_kmer(ascii_kmer, local_reads, idx, idx + kmer_len)
+        copy_kmer(aux_kmer, local_reads, idx, idx + kmer_len)
+
+        reverse_comp(aux_kmer, kmer_len)
+        if lower(ascii_kmer, aux_kmer):
+            copy_kmer(ascii_kmer, aux_kmer, 0, kmer_len)
+
         curr_kmer = transform_to_key(ascii_kmer, kmer_len)
 
         # set the bases as solids
@@ -420,8 +426,45 @@ def forward_base(ascii_kmer, base, kmer_length):
             ascii_kmer[idx] = ascii_kmer[idx + 1]
 
 @cuda.jit(device=True)
+def lower(kmer, aux_kmer):
+    if aux_kmer[0] < kmer[0]:
+        return True
+
+    return False
+@cuda.jit(device=True)
+def reverse_comp(reverse, kmer_len):
+    left = 0
+    right = kmer_len  - 1
+    while left <= right:
+        if reverse[left] == 1:
+            comp_left = 4
+        elif reverse[left] == 2:
+            comp_left = 3
+        elif reverse[left] == 3:
+            comp_left = 2
+        elif reverse[left] == 4:
+            comp_left = 1
+        else:
+            comp_left = 5
+
+        if reverse[right] == 1:
+            comp_right = 4
+        elif reverse[right] == 2:
+            comp_right = 3
+        elif reverse[left] == 3:
+            comp_right = 2
+        elif reverse[right] == 4:
+            comp_right = 1
+        else:
+            comp_right = 5
+
+        reverse[left] = comp_right
+        reverse[right] = comp_left
+        right -= 1
+        left += 1
+
+@cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):
-    
     for idx in range(seqlen):
         if local_read[idx] == 1:
             local_read[idx] = 65

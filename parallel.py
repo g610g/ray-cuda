@@ -139,9 +139,9 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     )
 
     # voting refinement is done within the one_sided_kernel
-    one_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
-    )
+    # one_sided_kernel[bpg, tbp](
+    #     dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
+    # )
 
     end.record()
     end.synchronize()
@@ -262,10 +262,10 @@ if __name__ == "__main__":
     )
     print(f"Length of reads: {len(reads)}")
 
-    kmer_len = 18
+    kmer_len = 19
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
-    kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3000000))
+    kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000))
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
     reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3000000))
     kmer_extract_end_time = time.perf_counter()
@@ -294,7 +294,10 @@ if __name__ == "__main__":
     filtered_kmer_df = non_unique_kmers[
         non_unique_kmers["multiplicity"] >= cutoff_threshold
     ]
+
     kmer_np = filtered_kmer_df.astype("uint64").to_numpy()
+    print(f"Number of trusted kmers: {filtered_kmer_df.shape[0]}")
+
     sort_start_time = time.perf_counter()
 
     sorted_kmer_np = sorted_arr = kmer_np[kmer_np[:, 0].argsort()]
@@ -308,8 +311,8 @@ if __name__ == "__main__":
     [corrected_reads_array, votes] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
-    ray.get([check_votes.remote(votes[idx: idx + batch_size]) for idx in range(0, len(votes), batch_size)])
-        
+    # ray.get([check_votes.remote(votes[idx: idx + batch_size]) for idx in range(0, len(votes), batch_size)])
+
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
         back_to_sequence_helper.remote(corrected_reads_array, offsets)

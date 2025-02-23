@@ -9,12 +9,20 @@ use bloomfilter::Bloom;
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
 }
 
 #[pyfunction]
-fn extract_kmers(reads:Vec<String>, kmer_length: usize) -> PyResult<()> {
-    let mut bloom = match Bloom::new_for_fp_rate(1000000,0.001 ){
+fn extract_kmers(file_path:String, kmer_length: usize) -> PyResult<Vec<String>> {
+    let reads = match generate_string_reads(file_path){
+        Ok(reads) => reads,
+        Err(_) => {
+            return Err(PyErr::new::<PyTypeError, _>("Something went wrong"));
+        }
+    };
+
+    let mut bloom = match Bloom::new_for_fp_rate(1000000, 0.001 ){
         Ok(bloom) => bloom,
         Err(_) => {return Err(PyErr::new::<PyTypeError, _>("Something went wrong initiating bloom filter"));
         }
@@ -24,16 +32,19 @@ fn extract_kmers(reads:Vec<String>, kmer_length: usize) -> PyResult<()> {
     reads.iter().for_each(|read|{
         let kmers = generate_kmers(read, &kmer_length);
         kmers.iter().for_each(|kmer|{
-
             if bloom.check(kmer){
-                hash_map.insert(kmer.clone(), 0);
+                hash_map.entry(kmer.clone()).and_modify(|count| *count += 1 ).or_insert(0);
             }else{
                 bloom.set(kmer);
             }
         });
     });
-    Ok(())
+
+    //let occurences:Vec<i32> = hash_map.clone().into_values().collect();
+    let kmers:Vec<String> = hash_map.into_keys().collect();
+    Ok(reads)
 }
+
 fn generate_kmers(read:&str, kmer_length:&usize) -> Vec<String>{
     read.chars()
     .collect::<Vec<char>>()
@@ -41,24 +52,31 @@ fn generate_kmers(read:&str, kmer_length:&usize) -> Vec<String>{
     .map(|x| x.iter().collect::<String>())
     .collect()
 }
-
-//creates python bindings that will be used for parsing fastq files
-#[pyfunction]
-fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
+fn generate_string_reads(file_path:String) -> Result<Vec<String>, &'static str>{
     match fastq::Reader::from_file(file_path) {
         Ok(reader) => {
             let mut read_vector = vec![];
             for result in reader.records() {
                 if let Ok(record) = result {
-                    let string_record = byte_to_string(record.seq())?;
+                    let string_record = byte_to_string(record.seq()).unwrap();
                     read_vector.push(string_record);
                 }
             }
             return Ok(read_vector);
         }
         Err(_) => {
-            return Err(PyErr::new::<PyTypeError, _>("Source fastq file name cannot be located"));
+            return Err("Something went wrong");
         }
+    }
+}
+
+//creates python bindings that will be used for parsing fastq files
+#[pyfunction]
+fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
+
+    match generate_string_reads(file_path) {
+        Ok(result) => Ok(result),
+        Err(_) => Err(PyErr::new::<PyTypeError, _>("Something went wrong"))
     }
 }
 #[pyfunction]

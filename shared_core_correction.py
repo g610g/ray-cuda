@@ -1,12 +1,14 @@
 from numba import cuda
+from numpy import copy
 from shared_helpers import (
     all_solid_base,
     identify_solid_bases,
     forward_base,
-    backward_base,
     identify_trusted_regions,
+    lower,
     predeccessor,
     predeccessor_v2,
+    reverse_comp,
     successor,
     successor_v2,
     copy_kmer,
@@ -68,7 +70,6 @@ def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
         if alternative_base > 0:
             local_read[ipos] = alternative_base
 
-
 @cuda.jit
 def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
     threadIdx = cuda.grid(1)
@@ -82,9 +83,9 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
         KMER_LEN = 21
         bases = cuda.local.array(4, dtype="uint8")
         solids = cuda.local.array(MAX_LEN, dtype="int8")
-        local_reads = cuda.local.array(300, dtype="uint8")
-        rpossible_base_mutations = cuda.local.array(10, dtype="uint8")
-        lpossible_base_mutations = cuda.local.array(10, dtype="uint8")
+        local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
+        rpossible_base_mutations = cuda.local.array(3, dtype="uint8")
+        lpossible_base_mutations = cuda.local.array(3, dtype="uint8")
         aux_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
         ascii_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
         seqlen = end - start
@@ -115,7 +116,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
             )
             # this read is error free. Stop correction
             if num_corrections == 0:
-                return
+                break
 
             # this read has more one than error within a kmer. Pass the read to one sided correction
             if num_corrections < 0:
@@ -139,12 +140,13 @@ def correct_two_sided(
     lpossible_base_mutations,
     rpossible_base_mutations,
     size,
+    rep
 ):
     for i in range(seqlen):
         solids[i] = -1
 
     # identify whether base is solid or not
-    identify_solid_bases(local_read, kmer_len, kmer_spectrum, solids, ascii_kmer, size)
+    identify_solid_bases(local_read, kmer_len, kmer_spectrum, solids, ascii_kmer, size, aux_kmer)
     # check whether solids array does not contain -1, return 0 if yes
     if all_solid_base(solids, seqlen):
         return 0
@@ -164,16 +166,33 @@ def correct_two_sided(
         if solids[ipos] == 1:
             continue
 
-        # do corrections right here
+        #checks for reverse complement and checking lowest canonical representation 
+        copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        reverse_comp(rep, kmer_len)
+        rev_comp = True
 
-        # select all possible mutations for rkmer (exclude the current base)
+        if lower(ascii_kmer, rep):
+            copy_kmer(ascii_kmer, rep, 0, kmer_len)
+        else:
+            rev_comp = False
+
+        # select all possible mutation right kmer
         rnum_bases = select_mutations(
-            kmer_spectrum, bases, ascii_kmer, kmer_len, 0, rpossible_base_mutations
+            kmer_spectrum, bases, ascii_kmer, kmer_len, 0, rpossible_base_mutations, rev_comp
         )
+        #checks for reverse complement and checking lowest canonical representation 
+        copy_kmer(rep, aux_kmer, 0, kmer_len)
+        reverse_comp(rep, kmer_len)
+        rev_comp = True
 
-        # select all possible mutations for lkmer
+        if lower(aux_kmer, rep):
+            copy_kmer(aux_kmer, rep, 0, kmer_len)
+        else:
+            rev_comp = False
+
+        # select all possible mutations for left kmer
         lnum_bases = select_mutations(
-            kmer_spectrum, bases, aux_kmer, kmer_len, lpos, lpossible_base_mutations
+            kmer_spectrum, bases, aux_kmer, kmer_len, lpos, lpossible_base_mutations, rev_comp
         )
 
         i = 0
@@ -204,6 +223,14 @@ def correct_two_sided(
         copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
         if solids[ipos] == 1:
             continue
+        copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        reverse_comp(rep, kmer_len)
+        rev_comp = True
+
+        if lower(ascii_kmer, rep):
+            copy_kmer(ascii_kmer, rep, 0, kmer_len)
+        else:
+            rev_comp = False
         # select mutations for right kmer
         rnum_bases = select_mutations(
             kmer_spectrum,
@@ -212,9 +239,20 @@ def correct_two_sided(
             kmer_len,
             ipos - size,
             rpossible_base_mutations,
+            rev_comp
         )
+
+        copy_kmer(rep, aux_kmer, 0, kmer_len)
+        reverse_comp(rep, kmer_len)
+        rev_comp = True
+
+        if lower(aux_kmer, rep):
+            copy_kmer(aux_kmer, rep, 0, kmer_len)
+        else:
+            rev_comp = False
+
         lnum_bases = select_mutations(
-            kmer_spectrum, bases, aux_kmer, kmer_len, klen_idx, lpossible_base_mutations
+            kmer_spectrum, bases, aux_kmer, kmer_len, klen_idx, lpossible_base_mutations, rev_comp
         )
         i = 0
         num_corrections = 0
@@ -246,16 +284,16 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
         DEFAULT_KMER_LEN = 21
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         solids = cuda.local.array(MAX_LEN, dtype="int8")
-        region_indices = cuda.local.array((10, 2), dtype="int32")
+        region_indices = cuda.local.array((20, 2), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
-        selected_bases = cuda.local.array(4, dtype="uint8")
+        selected_bases = cuda.local.array(3, dtype="uint8")
         aux_kmer = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_kmer2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         bases = cuda.local.array(4, dtype="uint8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
-        maxIters = 4
+        maxIters = 6
         min_vote = 3
         seqlen = end - start
         early_exit = False
@@ -304,6 +342,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 # no corrections made
                 if corrections_made == 0:
                     break
+
                 # a correction has been recorded and put the corrections in local read
                 else:
                     for i in range(seqlen):
@@ -324,7 +363,8 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
             )
 
             max_votes[threadIdx][nerr - 1] = max_vote
-            # #the read is error free at this point
+
+            #the read is error free at this point
             if max_vote == 0:
                 break
             elif max_vote >= min_vote:
