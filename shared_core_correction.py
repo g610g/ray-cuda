@@ -2,6 +2,7 @@ from numba import cuda
 from numpy import copy
 from shared_helpers import (
     all_solid_base,
+    complement,
     identify_solid_bases,
     forward_base,
     identify_trusted_regions,
@@ -20,7 +21,7 @@ from helpers import in_spectrum, transform_to_key, give_kmer_multiplicity
 
 @cuda.jit(device=True)
 def cast_votes(
-    local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum, ascii_kmer
+    local_read, vm, seq_len, kmer_len, bases, size, kmer_spectrum, ascii_kmer, rep, aux_kmer, aux_km2
 ):
     # reset voting matrix
     for i in range(seq_len):
@@ -30,19 +31,43 @@ def cast_votes(
 
     # check each kmer within the read (planning to put the checking of max vote within this iteration)
     for ipos in range(0, size + 1):
-
+        rev_comp = True
         copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
-        kmer = transform_to_key(ascii_kmer, kmer_len)
+        copy_kmer(rep, local_read, ipos, ipos + kmer_len)
+        reverse_comp(rep, kmer_len) 
+
+        if lower(rep, ascii_kmer):
+            copy_kmer(rep, ascii_kmer, 0, kmer_len)
+            rev_comp = False
+
+        kmer = transform_to_key(rep, kmer_len)
         if in_spectrum(kmer_spectrum, kmer):
             continue
+
         for base_idx in range(kmer_len):
-            original_base = ascii_kmer[base_idx]
+
+            idx = base_idx
+            if rev_comp:
+                idx = kmer_len - base_idx - 1
+
+            original_base = rep[idx]
+
             for base in bases:
                 if original_base == base:
                     continue
-                ascii_kmer[base_idx] = base
-                candidate = transform_to_key(ascii_kmer, kmer_len)
+                copy_kmer(aux_kmer, rep, 0, kmer_len)
+                aux_kmer[idx] = base
+                copy_kmer(aux_km2, aux_kmer, 0, kmer_len)
+                reverse_comp(aux_km2, kmer_len)
+
+                if lower(aux_km2, aux_kmer):
+                    copy_kmer(aux_km2, aux_kmer, 0, kmer_len)
+
+                candidate = transform_to_key(aux_km2 , kmer_len)
                 if in_spectrum(kmer_spectrum, candidate):
+                    if rev_comp:
+                        base = complement(base)
+
                     vm[ipos + base_idx][base - 1] += 1
             ascii_kmer[base_idx] = original_base
 
@@ -89,6 +114,7 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
         ascii_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(KMER_LEN, dtype="uint8")
         rep = cuda.local.array(KMER_LEN, dtype="uint8")
+
         seqlen = end - start
         size = seqlen - kmer_len
 
@@ -175,14 +201,13 @@ def correct_two_sided(
         reverse_comp(rep, kmer_len)
         rev_comp = True
 
-        if lower(ascii_kmer, rep):
-            copy_kmer(ascii_kmer, rep, 0, kmer_len)
-        else:
+        if lower(rep, ascii_kmer):
+            copy_kmer(rep, ascii_kmer, 0, kmer_len)
             rev_comp = False
 
         # select all possible mutation right kmer
         rnum_bases = select_mutations(
-            kmer_spectrum, bases, ascii_kmer, kmer_len, 0, rpossible_base_mutations, rev_comp, aux_km2
+            kmer_spectrum, bases, rep, kmer_len, 0, rpossible_base_mutations, rev_comp, ascii_kmer, aux_km2
         )
         #checks for reverse complement and checking lowest canonical representation 
         copy_kmer(rep, aux_kmer, 0, kmer_len)
@@ -195,17 +220,17 @@ def correct_two_sided(
 
         # select all possible mutations for left kmer
         lnum_bases = select_mutations(
-            kmer_spectrum, bases, rep, kmer_len, lpos, lpossible_base_mutations, rev_comp
+            kmer_spectrum, bases, rep, kmer_len, lpos, lpossible_base_mutations, rev_comp, aux_kmer, aux_km2
         )
 
         i = 0
         num_corrections = 0
         potential_base = -1
         while i < rnum_bases and num_corrections <= 1:
-            rbase = rpossible_base_mutations[i]
+            rbase = rpossible_base_mutations[i][0]
             j = 0
             while j < lnum_bases:
-                lbase = lpossible_base_mutations[j]
+                lbase = lpossible_base_mutations[j][0]
                 # add the potential correction
                 if lbase == rbase:
                     num_corrections += 1
@@ -242,7 +267,9 @@ def correct_two_sided(
             kmer_len,
             ipos - size,
             rpossible_base_mutations,
-            rev_comp
+            rev_comp,
+            ascii_kmer,
+            aux_km2
         )
 
         copy_kmer(rep, aux_kmer, 0, kmer_len)
@@ -255,16 +282,16 @@ def correct_two_sided(
             rev_comp = False
 
         lnum_bases = select_mutations(
-            kmer_spectrum, bases, rep, kmer_len, klen_idx, lpossible_base_mutations, rev_comp
+            kmer_spectrum, bases, rep, kmer_len, klen_idx, lpossible_base_mutations, rev_comp, aux_kmer, aux_km2
         )
         i = 0
         num_corrections = 0
         potential_base = -1
         while i < rnum_bases and num_corrections <= 1:
-            rbase = rpossible_base_mutations[i]
+            rbase = rpossible_base_mutations[i][0]
             j = 0
             while j < lnum_bases:
-                lbase = lpossible_base_mutations[j]
+                lbase = lpossible_base_mutations[j][0]
                 # add the potential correction
                 if lbase == rbase:
                     num_corrections += 1
@@ -366,7 +393,10 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                 bases,
                 seqlen - kmer_len,
                 kmer_spectrum,
+                km,
+                rep,
                 aux_km,
+                aux_km2
             )
 
             max_votes[threadIdx][nerr - 1] = max_vote

@@ -5,17 +5,14 @@ import cudf
 import numpy as np
 import fastq_parser
 import ray
-from Bio import SeqIO, Seq
-from host.one_sided import entry
+from Bio import Seq
 from shared_core_correction import *
 from numba import cuda
 from shared_helpers import (
     test_slice_array,
     to_local_reads,
     back_to_sequence_helper,
-    assign_sequence,
 )
-from utility_helpers.utilities import check_votes
 from voting import *
 from kmer import *
 
@@ -131,12 +128,12 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     bpg = offsets.shape[0] // tbp
 
     # invoking the two sided correction kernel
-    # two_sided_kernel[bpg, tbp](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    # )
+    two_sided_kernel[bpg, tbp](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+    )
 
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tbp](

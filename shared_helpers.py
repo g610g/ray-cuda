@@ -1,11 +1,8 @@
-from numpy import copy
 import cudf
 from numba import cuda
 from helpers import give_kmer_multiplicity, in_spectrum, transform_to_key, mark_solids_array, copy_solids
 from Bio import Seq
 import ray
-
-import kmer
 
 
 # function that checks the kmer tracker and reverse back kmers thats been corrected greater than max allowed
