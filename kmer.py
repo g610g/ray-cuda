@@ -3,6 +3,7 @@ import ray
 import math
 import numpy as np
 import cudf
+from shared_helpers import reverse_comp
 
 
 @ray.remote(num_gpus=1, num_cpus=1)
@@ -10,6 +11,7 @@ class KmerExtractorGPU:
     def __init__(self, kmer_length):
         self.kmer_length = kmer_length
         self.translation_table = str.maketrans({"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"})
+        self.reverse_comp = str.maketrans({"1": "4", "2": "3", "3": "2", "4": "1", "5": "5"})
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -106,9 +108,23 @@ class KmerExtractorGPU:
             self.translation_table
         )
 
-        ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
+        # Compute reverse complement for each k-mer
+        def reverse_complement(kmer):
+            complement = {"1": "4", "2": "3", "3": "2", "4": "1", "5": "5" }
+            return "".join([complement[base] for base in reversed(kmer)])
 
+        # Compute canonical k-mers
+        def canonical_kmer(kmer):
+            rc_kmer = reverse_complement(kmer)
+            return min(kmer, rc_kmer)  # Lexicographically smaller
+
+        #computes canonical kmers
+        ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
         exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
+
+
+        exploded_ngrams['canonical'] = exploded_ngrams.str.reverse()
+
         numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
         result_frame = numeric_ngrams.value_counts().reset_index()
 

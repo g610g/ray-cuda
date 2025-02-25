@@ -15,6 +15,7 @@ from shared_helpers import (
 )
 from voting import *
 from kmer import *
+from utility_helpers.utilities import check_votes
 
 # import seaborn as sns
 # import matplotlib.pyplot as plt
@@ -95,7 +96,7 @@ def check_corrections(kmers_tracker):
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def test_cuda_array_context():
-    
+
     my_arr = np.zeros((512, 21), dtype="uint16")
     my_aux_arr = np.zeros((512, 21), dtype="uint16")
 
@@ -251,7 +252,9 @@ if __name__ == "__main__":
     reads_refer_starttime = time.perf_counter()
     reads_reference = ray.put(reads)
     reads_refer_endtime = time.perf_counter()
-    print(f"time it takes to put reads into object store: {reads_refer_endtime - reads_refer_starttime}")
+    print(
+        f"time it takes to put reads into object store: {reads_refer_endtime - reads_refer_starttime}"
+    )
 
     transform_to_string_end_time = time.perf_counter()
     print(
@@ -262,9 +265,13 @@ if __name__ == "__main__":
     kmer_len = 19
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
-    kmer_occurences = ray.get(gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000))
+    kmer_occurences = ray.get(
+        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000)
+    )
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
-    reads_1d = ray.get(gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3000000))
+    reads_1d = ray.get(
+        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3000000)
+    )
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
@@ -282,7 +289,7 @@ if __name__ == "__main__":
     print(f"max occurence data: {max_occurence}")
 
     print(f"kmer spectrum {non_unique_kmers}")
-    cutoff_threshold = calculatecutoff_threshold(occurence_data,  max_occurence // 2)
+    cutoff_threshold = calculatecutoff_threshold(occurence_data, max_occurence // 2)
     # testing static cutoff threshold checking if this calculation causes error
     print(f"cutoff threshold: {cutoff_threshold}")
 
@@ -301,14 +308,20 @@ if __name__ == "__main__":
     sort_end_time = time.perf_counter()
 
     print(f"reads 1d length: {len(reads_1d)}")
-    #sorting the kmer spectrum in order to make the search faster with binary search
+    # sorting the kmer spectrum in order to make the search faster with binary search
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(sorted_kmer_np)
 
     [corrected_reads_array, votes] = ray.get(
         remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
     )
-    # ray.get([check_votes.remote(votes[idx: idx + batch_size]) for idx in range(0, len(votes), batch_size)])
+
+    ray.get(
+        [
+            check_votes.remote(votes[idx : idx + batch_size])
+            for idx in range(0, len(votes), batch_size)
+        ]
+    )
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
@@ -321,7 +334,9 @@ if __name__ == "__main__":
 
     write_file_starttime = time.perf_counter()
     print(corrected_2d_reads_array)
-    fastq_data_list = fastq_parser.write_fastq_file('genetic-assets/please.fastq', sys.argv[1], corrected_2d_reads_array)
+    fastq_data_list = fastq_parser.write_fastq_file(
+        "genetic-assets/please.fastq", sys.argv[1], corrected_2d_reads_array
+    )
 
     write_file_endtime = time.perf_counter()
     print(

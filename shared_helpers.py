@@ -1,6 +1,12 @@
 import cudf
 from numba import cuda
-from helpers import give_kmer_multiplicity, in_spectrum, transform_to_key, mark_solids_array, copy_solids
+from helpers import (
+    give_kmer_multiplicity,
+    in_spectrum,
+    transform_to_key,
+    mark_solids_array,
+    copy_solids,
+)
 from Bio import Seq
 import ray
 
@@ -23,20 +29,23 @@ def check_tracker(
 
 @cuda.jit(device=True)
 def identify_solid_bases(
-    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size, aux_kmer
+    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size, rep
 ):
 
     for idx in range(0, size + 1):
         copy_kmer(ascii_kmer, local_reads, idx, idx + kmer_len)
-        copy_kmer(aux_kmer, local_reads, idx, idx + kmer_len)
+        copy_kmer(rep, local_reads, idx, idx + kmer_len)
 
-        reverse_comp(aux_kmer, kmer_len)
-        if lower(ascii_kmer, aux_kmer):
-            copy_kmer(ascii_kmer, aux_kmer, 0, kmer_len)
+        # calculate the reverse complement of the current kmer
+        reverse_comp(rep, kmer_len)
 
-        curr_kmer = transform_to_key(ascii_kmer, kmer_len)
+        # consider who is lexicographically smaller
+        if lower(rep, ascii_kmer):
+            copy_kmer(rep, ascii_kmer, 0, kmer_len)
 
-        # set the bases as solids
+        curr_kmer = transform_to_key(rep, kmer_len)
+
+        # use the lexicographical small represenataion and set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
             mark_solids_array(solids, idx, idx + kmer_len)
 
@@ -51,10 +60,12 @@ def identify_trusted_regions(
     solids,
     aux_kmer,
     size,
-    rep
+    rep,
 ):
 
-    identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, aux_kmer, size, rep)
+    identify_solid_bases(
+        local_reads, kmer_len, kmer_spectrum, solids, aux_kmer, size, rep
+    )
 
     trusted_regions_count = 0
     base_count = 0
@@ -267,9 +278,11 @@ def successor_v2(
         forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
         aux_kmer[counter] = alternative_base
 
+        # check which is lexicographically smaller between original succeeding kmer and reverse complemented succeeding kmer
         copy_kmer(rep, aux_kmer, 0, kmer_length)
         reverse_comp(rep, kmer_length)
 
+        # choose lexicographically smaller
         if lower(rep, aux_kmer):
             copy_kmer(rep, aux_kmer, 0, kmer_length)
 
@@ -323,7 +336,7 @@ def predeccessor_v2(
     target_pos,
     alternative_base,
     distance,
-    rep
+    rep,
 ):
     ipos = target_pos - 1
     if ipos < 0 or distance <= 0:
@@ -340,6 +353,7 @@ def predeccessor_v2(
             copy_kmer(rep, aux_kmer, 0, kmer_length)
 
         candidate = transform_to_key(rep, kmer_length)
+
         if not in_spectrum(kmer_spectrum, candidate):
             return False
         counter += 1
@@ -394,7 +408,6 @@ def test_slice_array(arr, aux_arr_storage, arr_len):
     threadIdx = cuda.grid(1)
     if threadIdx <= arr_len:
         local_kmer = cuda.local.array(21, dtype="uint8")
-        
 
 
 @cuda.jit(device=True)
@@ -404,38 +417,43 @@ def copy_kmer(aux_kmer, local_read, start, end):
 
 
 @cuda.jit(device=True)
-def select_mutations(spectrum, bases, ascii_kmer, kmer_len, pos, selected_bases, rev_comp, aux_km, aux_km2):
+def select_mutations(
+    spectrum, bases, km, kmer_len, pos, selected_bases, rev_comp, aux_km, aux_km2
+):
+    # calculate the pos value considering rev_comp flag
     num_bases = 0
     if rev_comp:
         pos = kmer_len - 1 - pos
 
-    original_base = ascii_kmer[pos]
-    copy_kmer(aux_km, ascii_kmer, 0, kmer_len)
+    original_base = km[pos]
+    copy_kmer(aux_km, km, 0, kmer_len)
 
-    for idx in range(4):
-        if bases[idx] == original_base:
+    for base in bases:
+        if base == original_base:
             continue
         else:
-            aux_km[pos] = bases[idx]
+            # consider the reverse complement of mutated aux_km and store in aux_km2
+
+            aux_km[pos] = base
             copy_kmer(aux_km2, aux_km, 0, kmer_len)
             reverse_comp(aux_km2, kmer_len)
+
+            # check if whose lexicographically smaller between auxKm2 and auxkm
             if lower(aux_km2, aux_km):
                 copy_kmer(aux_km2, aux_km, 0, kmer_len)
 
-
+            # use the lexicographically small during checking the spectrum
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
-                selected_bases[num_bases][1] = give_kmer_multiplicity(spectrum, candidate)
+                selected_bases[num_bases][1] = give_kmer_multiplicity(
+                    spectrum, candidate
+                )
+                # use complement of selected base if rev comp flag is active
                 if rev_comp:
-                    base = complement(bases[idx])
-                else:
-                    base = bases[idx]
+                    base = complement(base)
 
                 selected_bases[num_bases][0] = base
                 num_bases += 1
-
-    # assign back the original base
-    ascii_kmer[pos] = original_base
 
     return num_bases
 
@@ -447,6 +465,8 @@ def backward_base(ascii_kmer, base, kmer_length):
         ascii_kmer[idx] = ascii_kmer[(idx - 1)]
 
     ascii_kmer[0] = base
+
+
 # forward the base or shifts bases to the right
 @cuda.jit(device=True)
 def forward_base(ascii_kmer, base, kmer_length):
@@ -456,12 +476,19 @@ def forward_base(ascii_kmer, base, kmer_length):
         else:
             ascii_kmer[idx] = ascii_kmer[idx + 1]
 
+
+# this might be unnecessary slow
 @cuda.jit(device=True)
 def lower(kmer, aux_kmer):
-    if aux_kmer[0] < kmer[0]:
-        return True
+    DEFAULT_KMERLEN = 19
+    for idx in range(DEFAULT_KMERLEN):
+        if aux_kmer[idx] == kmer[idx]:
+            continue
+        elif aux_kmer[idx] < kmer[idx]:
+            return True
+        return False
 
-    return False
+
 @cuda.jit(device=True)
 def reverse_comp(reverse, kmer_len):
     left = 0
@@ -474,18 +501,21 @@ def reverse_comp(reverse, kmer_len):
         right -= 1
         left += 1
 
+
 @cuda.jit(device=True)
 def complement(base):
-    if base == 1: 
+    if base == 1:
         return 4
     elif base == 2:
         return 3
     elif base == 3:
         return 2
-    elif base == 3:
+    elif base == 4:
         return 1
-    else: 
+    else:
         return 5
+
+
 @cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):
     for idx in range(seqlen):
@@ -501,4 +531,3 @@ def to_decimal_ascii(local_read, seqlen):
             local_read[idx] = 78
         else:
             local_read[idx] = 0
-

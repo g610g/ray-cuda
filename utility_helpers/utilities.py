@@ -32,3 +32,11 @@ def test_return_value(val, iter, bases):
     for base in bases:
         sum += base
     return sum
+
+@cuda.jit()
+def reverse_comp(reverse_comp, kmers):
+    threadIdx = cuda.grid(1)
+    if threadIdx < kmers.shape:
+        
+
+
