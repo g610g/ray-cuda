@@ -2,6 +2,7 @@ from numba import cuda
 from shared_helpers import (
     all_solid_base,
     complement,
+    encode_bases,
     identify_solid_bases,
     forward_base,
     identify_trusted_regions,
@@ -35,16 +36,17 @@ def cast_votes(
     for i in range(seq_len):
         for j in range(4):
             vm[i][j] = 0
-    max_vote = 0
 
+    max_vote = 0
+    error_free = True
     # check each kmer within the read (planning to put the checking of max vote within this iteration)
     for ipos in range(0, size + 1):
         rev_comp = True
         copy_kmer(km, local_read, ipos, ipos + kmer_len)
-        copy_kmer(rep, local_read, ipos, ipos + kmer_len)
+        copy_kmer(rep, km, 0, kmer_len)
         reverse_comp(rep, kmer_len)
 
-        if lower(rep, km):
+        if lower(rep, km, kmer_len):
             copy_kmer(rep, km, 0, kmer_len)
             rev_comp = False
 
@@ -52,11 +54,13 @@ def cast_votes(
         if in_spectrum(kmer_spectrum, kmer):
             continue
 
-        for base_idx in range(kmer_len):
+        error_free = False
+
+        for base_idx in range(0, kmer_len):
 
             idx = base_idx
             if rev_comp:
-                idx = kmer_len - base_idx - 1
+                idx = kmer_len - 1 - base_idx
 
             original_base = rep[idx]
 
@@ -68,7 +72,7 @@ def cast_votes(
                 copy_kmer(aux_km2, aux_kmer, 0, kmer_len)
                 reverse_comp(aux_km2, kmer_len)
 
-                if lower(aux_km2, aux_kmer):
+                if lower(aux_km2, aux_kmer, kmer_len):
                     copy_kmer(aux_km2, aux_kmer, 0, kmer_len)
 
                 candidate = transform_to_key(aux_km2, kmer_len)
@@ -76,8 +80,12 @@ def cast_votes(
                     if rev_comp:
                         base = complement(base)
 
-                    vm[ipos + base_idx][base - 1] += 1
+                    # add restriction range
+                    if base > 0 and base < 5:
+                        vm[ipos + base_idx][base - 1] += 1
 
+    if error_free:
+        return 0
     # find maximum vote
     for ipos in range(0, seq_len):
         for idx in range(4):
@@ -98,48 +106,54 @@ def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
                 else:
                     alternative_base = -1
         # apply the base correction if we have found an alternative base
-        if alternative_base > 0:
+        if alternative_base > 0 and alternative_base < 5:
             local_read[ipos] = alternative_base
 
 
 @cuda.jit
-def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
+def two_sided_kernel(
+    kmer_spectrum, reads, offsets, kmer_len, corrections_flag, last_end_idx
+):
     threadIdx = cuda.grid(1)
 
     # if the rightside and leftside are present in the kmer spectrum, then assign 1 into the result. Otherwise, 0
     if threadIdx < offsets.shape[0]:
 
         # find the read assigned to this thread
-        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        initial_start, initial_end = offsets[threadIdx][0], offsets[threadIdx][1]
+        start, end = initial_start - last_end_idx, initial_end - last_end_idx
         MAX_LEN = 300
-        KMER_LEN = 21
+        KMER_LEN = 19
         bases = cuda.local.array(4, dtype="uint8")
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
-        rpossible_base_mutations = cuda.local.array((3, 2), dtype="uint8")
-        lpossible_base_mutations = cuda.local.array((3, 2), dtype="uint8")
+        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
         aux_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
-        ascii_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
+        km = cuda.local.array(KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(KMER_LEN, dtype="uint8")
         rep = cuda.local.array(KMER_LEN, dtype="uint8")
+        encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
 
         seqlen = end - start
         size = seqlen - kmer_len
 
         # this should be a terminal argument
         max_iters = 2
+        corrections_counter = 0
+
         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
-        for idx in range(0, end - start):
+        for idx in range(0, seqlen):
             local_reads[idx] = reads[idx + start]
 
-        for i in range(4):
+        for i in range(0, 4):
             bases[i] = i + 1
 
-        for _ in range(max_iters):
+        for _ in range(0, max_iters):
             num_corrections = correct_two_sided(
                 seqlen,
                 kmer_spectrum,
-                ascii_kmer,
+                km,
                 aux_kmer,
                 kmer_len,
                 bases,
@@ -150,25 +164,39 @@ def two_sided_kernel(kmer_spectrum, reads, offsets, kmer_len):
                 size,
                 rep,
                 aux_km2,
+                encoded_bases,
             )
             # this read is error free. Stop correction
             if num_corrections == 0:
-                break
+                for idx in range(0, seqlen):
+                    reads[idx + start] = local_reads[idx]
+                corrections_flag[threadIdx] = 0
+                return
 
             # this read has more one than error within a kmer. Pass the read to one sided correction
             if num_corrections < 0:
-                break
+                for idx in range(0, seqlen):
+                    reads[idx + start] = local_reads[idx]
+                corrections_flag[threadIdx] = -1
+                return
+
+            corrections_counter = 1
+        # endfor max_iters
+
+        corrections_flag[threadIdx] = corrections_counter
 
         # bring local read back to global memory reads
-        for idx in range(end - start):
+        for idx in range(0, seqlen):
             reads[idx + start] = local_reads[idx]
+
+        return
 
 
 @cuda.jit(device=True)
 def correct_two_sided(
     seqlen,
     kmer_spectrum,
-    ascii_kmer,
+    km,
     aux_kmer,
     kmer_len,
     bases,
@@ -179,13 +207,17 @@ def correct_two_sided(
     size,
     rep,
     aux_km2,
+    encoded_bases,
 ):
-    for i in range(seqlen):
+    # solids clear
+    for i in range(0, seqlen):
         solids[i] = -1
 
-    # identify whether base is solid or not
+    # encode "5" base into "1" base
+    copy_kmer(encoded_bases, local_read, 0, seqlen)
+    encode_bases(encoded_bases, seqlen)
     identify_solid_bases(
-        local_read, kmer_len, kmer_spectrum, solids, ascii_kmer, size, aux_kmer
+        encoded_bases, kmer_len, kmer_spectrum, solids, km, size, aux_kmer
     )
     # check whether solids array does not contain -1, return 0 if yes
     if all_solid_base(solids, seqlen):
@@ -196,24 +228,24 @@ def correct_two_sided(
     for ipos in range(0, size + 1):
         lpos = 0
         if ipos >= 0:
-            copy_kmer(ascii_kmer, local_read, ipos, ipos + kmer_len)
+            copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
         if ipos >= kmer_len:
-            copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
+            copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
             lpos = klen_idx
         else:
-            copy_kmer(aux_kmer, local_read, 0, kmer_len)
+            copy_kmer(aux_kmer, encoded_bases, 0, kmer_len)
             lpos = ipos
         # trusted base
         if solids[ipos] == 1:
             continue
 
         # checks for reverse complement and checking lowest canonical representation
-        copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        copy_kmer(rep, km, 0, kmer_len)
         reverse_comp(rep, kmer_len)
         rev_comp = True
 
-        if lower(rep, ascii_kmer):
-            copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        if lower(rep, km, kmer_len):
+            copy_kmer(rep, km, 0, kmer_len)
             rev_comp = False
 
         # select all possible mutation right kmer
@@ -225,7 +257,7 @@ def correct_two_sided(
             0,
             rpossible_base_mutations,
             rev_comp,
-            ascii_kmer,
+            km,
             aux_km2,
         )
         # checks for reverse complement and checking lowest canonical representation
@@ -233,7 +265,7 @@ def correct_two_sided(
         reverse_comp(rep, kmer_len)
         rev_comp = True
 
-        if lower(rep, aux_kmer):
+        if lower(rep, aux_kmer, kmer_len):
             copy_kmer(rep, aux_kmer, 0, kmer_len)
             rev_comp = False
 
@@ -273,17 +305,23 @@ def correct_two_sided(
 
     # for bases > seqlen - klen)
 
-    copy_kmer(ascii_kmer, local_read, size, seqlen)
     for ipos in range(size + 1, seqlen):
-        copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
+
+        # left kmer
+        copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
+
+        # right kmer
+        copy_kmer(km, encoded_bases, size, seqlen)
+
         if solids[ipos] == 1:
             continue
-        copy_kmer(rep, ascii_kmer, 0, kmer_len)
+
+        copy_kmer(rep, km, 0, kmer_len)
         reverse_comp(rep, kmer_len)
         rev_comp = True
 
-        if lower(rep, ascii_kmer):
-            copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        if lower(rep, km, kmer_len):
+            copy_kmer(rep, km, 0, kmer_len)
             rev_comp = False
 
         # select mutations for right kmer
@@ -295,7 +333,7 @@ def correct_two_sided(
             ipos - size,
             rpossible_base_mutations,
             rev_comp,
-            ascii_kmer,
+            km,
             aux_km2,
         )
 
@@ -303,10 +341,10 @@ def correct_two_sided(
         reverse_comp(rep, kmer_len)
         rev_comp = True
 
-        if lower(rep, aux_kmer):
+        if lower(rep, aux_kmer, kmer_len):
             copy_kmer(rep, aux_kmer, 0, kmer_len)
             rev_comp = False
-
+        # select mutations for left kmer
         lnum_bases = select_mutations(
             kmer_spectrum,
             bases,
@@ -340,17 +378,31 @@ def correct_two_sided(
 
 
 @cuda.jit()
-def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
+def one_sided_kernel(
+    kmer_spectrum,
+    reads,
+    offsets,
+    kmer_len,
+    max_votes,
+    correction_flags,
+    onesided_flags,
+    last_end_idx,
+):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
 
+        # return early if two sided deems the read as solid
+        if correction_flags[threadIdx] == 0:
+            return
+
         MAX_LEN = 300
-        DEFAULT_KMER_LEN = 21
-        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+        DEFAULT_KMER_LEN = 19
+        initial_start, initial_end = offsets[threadIdx][0], offsets[threadIdx][1]
+        start, end = initial_start - last_end_idx, initial_end - last_end_idx
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         region_indices = cuda.local.array((20, 2), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
-        selected_bases = cuda.local.array((3, 2), dtype="uint8")
+        selected_bases = cuda.local.array((4, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
@@ -359,25 +411,24 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
         aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
+        encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
         maxIters = 4
         min_vote = 3
         seqlen = end - start
-        early_exit = False
 
         # seeding bases 1 to 4
         for i in range(0, 4):
             bases[i] = i + 1
 
         # transfer global memory store reads to local thread memory read
-        for idx in range(end - start):
+        for idx in range(0, seqlen):
             local_read[idx] = reads[start + idx]
 
         for nerr in range(1, maxIters + 1):
-            if early_exit:
-                break
 
             distance = maxIters - nerr + 1
             for _ in range(2):
+
                 # reset solids and aux_corrections every before run of onesided
                 for idx in range(seqlen):
                     solids[idx] = -1
@@ -401,26 +452,30 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
                     local_read_aux,
                     rep,
                     aux_km2,
+                    encoded_bases,
                 )
 
                 # returns -1 means all bases are solid
                 if corrections_made == -1:
-                    early_exit = True
-                    break
+                    for idx in range(0, seqlen):
+                        reads[start + idx] = local_read[idx]
+                    return
+
                 # no corrections made
                 if corrections_made == 0:
                     break
 
                 # a correction has been recorded and put the corrections in local read
-                else:
+                elif corrections_made > 0:
                     for i in range(seqlen):
-                        if aux_corrections[i] > 0:
+                        if aux_corrections[i] > 0 and aux_corrections[i] < 5:
                             local_read[i] = aux_corrections[i]
 
             # start voting refinement here
-
+            copy_kmer(encoded_bases, local_read, 0, seqlen)
+            encode_bases(encoded_bases, seqlen)
             max_vote = cast_votes(
-                local_read,
+                encoded_bases,
                 voting_matrix,
                 seqlen,
                 kmer_len,
@@ -443,7 +498,7 @@ def one_sided_kernel(kmer_spectrum, reads, offsets, kmer_len, max_votes):
         # endfor idx to max_corrections
 
         # copies back corrected local read into global memory stored reads
-        for idx in range(seqlen):
+        for idx in range(0, seqlen):
             reads[start + idx] = local_read[idx]
 
 
@@ -602,14 +657,18 @@ def one_sided_v2(
     local_read_aux,
     rep,
     aux_km2,
+    encoded_bases,
 ):
 
+    done = False
+    copy_kmer(encoded_bases, original_read, 0, seq_len)
+    encode_bases(encoded_bases, seq_len)
     corrections_made = 0
     size = seq_len - kmer_len
     regions_count = identify_trusted_regions(
         seq_len,
         spectrum,
-        original_read,
+        encoded_bases,
         kmer_len,
         region_indices,
         solids,
@@ -626,30 +685,28 @@ def one_sided_v2(
         right_orientation_idx = -1
         last_position = -1
         num_corrections = 0
+        copy_kmer(local_read_aux, encoded_bases, 0, seq_len)
         for target_pos in range(right_mer_idx + 1, seq_len):
             if solids[target_pos] == 1:
                 break
 
-            done = False
             spos = target_pos - (kmer_len - 1)
 
-            if target_pos == (right_mer_idx + 1):
-                copy_kmer(ascii_kmer, original_read, spos, target_pos + 1)
-            else:
-                forward_base(ascii_kmer, original_read[target_pos], kmer_len)
+            copy_kmer(ascii_kmer, local_read_aux, spos, target_pos + 1)
 
             # checks for reverse complement and checking lowest canonical representation
-            rev_comp = True
             copy_kmer(rep, ascii_kmer, 0, kmer_len)
             reverse_comp(rep, kmer_len)
+            rev_comp = True
 
-            if lower(rep, ascii_kmer):
+            if lower(rep, ascii_kmer, kmer_len):
                 copy_kmer(rep, ascii_kmer, 0, kmer_len)
                 rev_comp = False
 
             # select all possible mutations
             kmer = transform_to_key(rep, kmer_len)
             if not in_spectrum(spectrum, kmer):
+                done = False
                 num_bases = select_mutations(
                     spectrum,
                     bases,
@@ -667,7 +724,7 @@ def one_sided_v2(
                     if right_orientation_idx == -1:
                         right_orientation_idx = target_pos
                     aux_corrections[target_pos] = selected_bases[0][0]
-                    ascii_kmer[kmer_len - 1] = selected_bases[0][0]
+                    local_read_aux[target_pos] = selected_bases[0][0]
                     corrections_made += 1
                     done = True
                 else:
@@ -677,7 +734,7 @@ def one_sided_v2(
                         copy_kmer(aux_kmer, ascii_kmer, 0, kmer_len)
                         if successor_v2(
                             kmer_len,
-                            original_read,
+                            local_read_aux,
                             aux_kmer,
                             spectrum,
                             selected_bases[idx][0],
@@ -695,7 +752,7 @@ def one_sided_v2(
                             right_orientation_idx = target_pos
 
                         aux_corrections[target_pos] = best_base
-                        ascii_kmer[kmer_len - 1] = best_base
+                        local_read_aux[target_pos] = best_base
                         corrections_made += 1
                         done = True
 
@@ -728,7 +785,7 @@ def one_sided_v2(
         lkmer_idx = region_indices[region][0]
         if lkmer_idx > 0:
 
-            copy_kmer(local_read_aux, original_read, 0, seq_len)
+            copy_kmer(local_read_aux, encoded_bases, 0, seq_len)
             last_position = right_orientation_idx
 
             num_corrections = 0
@@ -738,15 +795,13 @@ def one_sided_v2(
                 if solids[pos] == 1:
                     break
 
-                done = False
-
                 copy_kmer(ascii_kmer, local_read_aux, pos, pos + kmer_len)
 
-                rev_comp = True
                 copy_kmer(rep, ascii_kmer, 0, kmer_len)
                 reverse_comp(rep, kmer_len)
+                rev_comp = True
 
-                if lower(rep, ascii_kmer):
+                if lower(rep, ascii_kmer, kmer_len):
                     copy_kmer(rep, ascii_kmer, 0, kmer_len)
                     rev_comp = False
 
@@ -763,6 +818,7 @@ def one_sided_v2(
                         aux_kmer,
                         aux_km2,
                     )
+                    done = False
 
                     # apply correction
                     if num_bases == 1:

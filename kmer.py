@@ -1,17 +1,20 @@
-from os import read
+from unittest import result
 import ray
 import math
 import numpy as np
 import cudf
+from numba import cuda
 from shared_helpers import reverse_comp
+from utility_helpers.utilities import reverse_comp_kmer
 
 
 @ray.remote(num_gpus=1, num_cpus=1)
 class KmerExtractorGPU:
     def __init__(self, kmer_length):
         self.kmer_length = kmer_length
-        self.translation_table = str.maketrans({"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"})
-        self.reverse_comp = str.maketrans({"1": "4", "2": "3", "3": "2", "4": "1", "5": "5"})
+        self.translation_table = str.maketrans(
+            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"}
+        )
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -28,7 +31,6 @@ class KmerExtractorGPU:
         offsets = cudf.DataFrame(
             {"start_indices": start_indices, "end_indices": end_indices}
         ).to_numpy()
-        print(offsets)
         return offsets
 
     def transform_reads_2_1d_batch(self, reads, batch_size):
@@ -45,7 +47,7 @@ class KmerExtractorGPU:
                 .to_numpy()
             )
 
-        return np.concatenate(result)
+        return np.concatenate(result).astype("uint8")
 
     def transform_reads_2_1d(self, reads, batch_size):
         if len(reads) > batch_size:
@@ -66,6 +68,19 @@ class KmerExtractorGPU:
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
 
+    def check_rev_comp_kmer(self, kmer_df):
+        # (refactor this type conversions)
+        kmer_np = kmer_df.astype("uint64").to_numpy().astype(np.uint64)
+        dev_kmers = cuda.to_device(kmer_np)
+        dev_kmer_array = cuda.to_device(
+            np.zeros((kmer_np.shape[0], self.kmer_length), dtype="uint8")
+        )
+        tbp = 1024
+        bpg = math.ceil(kmer_np.shape[0] / tbp)
+        reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length, dev_kmer_array)
+        kmers = dev_kmers.copy_to_host()
+        return kmers
+
     # store the dataframe as state of this worker to be used by downstream tasks
     def calculate_kmers_multiplicity_batch(self, reads, batch_size):
         all_results = []
@@ -74,9 +89,9 @@ class KmerExtractorGPU:
             read_s = cudf.Series(reads[i : i + batch_size], name="reads")
             read_df = read_s.to_frame()
 
-            read_df["translated"] = read_df["reads"].str.translate(
-                self.translation_table
-            )
+            replaced_df = read_df["reads"].str.replace("N", "A")
+
+            read_df["translated"] = replaced_df.str.translate(self.translation_table)
 
             ngram_kmers = read_df["translated"].str.character_ngrams(
                 self.kmer_length, True
@@ -87,14 +102,32 @@ class KmerExtractorGPU:
             all_results.append(result_frame)
 
         final_result = (
-            cudf.concat(all_results, ignore_index=True).groupby("translated").sum().reset_index()
+            cudf.concat(all_results, ignore_index=True)
+            .groupby("translated")
+            .sum()
+            .reset_index()
         )
         final_result.columns = ["translated", "multiplicity"]
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"final result shape is: {final_result.shape}")
         print(f"final result is: {final_result}")
-        return final_result
+        print(f"Kmers before calculating canonical kmers: {final_result}")
+        kmers_np = self.check_rev_comp_kmer(final_result)
 
+        if len(kmers_np[:, 0]) == len(kmers_np[:, 1]):
+            final_kmers = (
+                cudf.DataFrame(
+                    {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+                )
+                .groupby("canonical")
+                .sum()
+                .reset_index()
+            )
+
+            print(f"Kmers after calculating canonical kmers: {final_kmers}")
+            return final_kmers
+
+    # lets set arbitrary amount of batch size for canonical kmer calculation
     def calculate_kmers_multiplicity(self, reads, batch_size):
 
         if len(reads) > batch_size:
@@ -103,46 +136,41 @@ class KmerExtractorGPU:
         read_s = cudf.Series(reads, name="reads")
         read_df = read_s.to_frame()
 
+        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
 
-        read_df["translated"] = read_df["reads"].str.translate(
-            self.translation_table
-        )
-
-        # Compute reverse complement for each k-mer
-        def reverse_complement(kmer):
-            complement = {"1": "4", "2": "3", "3": "2", "4": "1", "5": "5" }
-            return "".join([complement[base] for base in reversed(kmer)])
-
-        # Compute canonical k-mers
-        def canonical_kmer(kmer):
-            rc_kmer = reverse_complement(kmer)
-            return min(kmer, rc_kmer)  # Lexicographically smaller
-
-        #computes canonical kmers
+        # computes canonical kmers
         ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
         exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
-
-
-        exploded_ngrams['canonical'] = exploded_ngrams.str.reverse()
 
         numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
         result_frame = numeric_ngrams.value_counts().reset_index()
 
         result_frame.columns = ["translated", "multiplicity"]
-
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        return result_frame
+        print(f"Kmers before calculating canonical kmers: {result_frame}")
+        # we do this by batch
+        kmers_np = self.check_rev_comp_kmer(result_frame)
+        final_kmers = (
+            cudf.DataFrame(
+                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+            )
+            .groupby("canonical")
+            .sum()
+            .reset_index()
+        )
+        print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers
 
 
 # todo:refactor
 def calculatecutoff_threshold(occurence_data, bin):
 
-    hist_vals, bin_edges = np.histogram(occurence_data, bins=bin)
+    hist_vals, bin_edges = np.histogram(occurence_data, bins=int(bin))
 
-    print((hist_vals[:30]))
+    # print((hist_vals[:30]))
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-    print(bin_centers[:30])
+    # print(bin_centers[:30])
 
     valley_index = 0
 

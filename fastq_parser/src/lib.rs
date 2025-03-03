@@ -2,17 +2,21 @@
 extern crate test;
 use bio::io::fastq::{self, Record};
 use bloomfilter::Bloom;
-use numpy::{PyArray2, PyArrayMethods};
+use numpy::ndarray::{Array2, ArrayD, ArrayView2};
+use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
+use ofilter::SyncBloom;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 use std::collections::hash_map::HashMap;
+use std::str;
 
+static NTHREADS: u32 = 48;
 pub mod functionalities {
-    use std::str;
-
     use bio::io::fastq::{self, Record};
+    use rand;
     use rayon::prelude::*;
+    use std::{collections::HashMap, str};
     pub struct Student {
         pub age: u32,
     }
@@ -36,36 +40,82 @@ pub mod functionalities {
             .collect()
     }
     //fn extract_kmers() -> Vec<String> {}
-    pub fn parse_fastq_file_parallel(file_path: String) -> Result<Vec<String>, String> {
+    pub fn parse_fastq_file_parallel(
+        file_path: String,
+        kmer_length: usize,
+    ) -> Result<Vec<Vec<String>>, String> {
         let reader = fastq::Reader::from_file(file_path).unwrap();
-        let records: Vec<Result<Record, _>> = reader.records().collect();
+        //let mut bloom = bloomfilter::Bloom::new_for_fp_rate(1_000_000, 0.001).unwrap();
+        //let mut hash_map = HashMap::new();
 
-         records
+        let records: Vec<Result<Record, _>> = reader.records().collect();
+        records
             .into_par_iter()
             .map(|record| {
-                let record = match record{
+                let record = match record {
                     Ok(record) => record,
-                    Err(_) => return Err("Invalid fastq record".to_string())
+                    Err(_) => return Err("Invalid fastq record".to_string()),
                 };
-                let string_read = match str::from_utf8(record.seq()){
+                let string_read = match String::from_utf8(record.seq().to_vec()) {
                     Ok(string_read) => string_read,
-                    Err(_) => return Err("error converting byte array into string".to_string())
+                    Err(_) => return Err("error converting byte array into string".to_string()),
                 };
-                Ok(string_read.to_string()) 
+
+                //we will be using bloom filter for this process
+                let kmers = string_read
+                    .chars()
+                    .collect::<Vec<char>>()
+                    .windows(kmer_length)
+                    .map(|x| x.iter().collect::<String>())
+                    .collect();
+
+                //.for_each(|kmer| {
+                //    //use bloom filter and use hashmap to store this
+                //    hash_map.entry(kmer).and_modify(|val| *val + 1).or_insert(0);
+                //});
+                Ok(kmers)
             })
             .collect()
     }
-    pub fn parallel_increment(arr: &mut Vec<Student>) -> Result<(), String> {
-        let incremented: Vec<u32> = arr.par_iter_mut().map(|student| student.age + 1).collect();
-        Ok(())
+    pub fn random_computation(age: &u32) {
+        let mut rng = rand::rng();
+
+        (0..20_000).for_each(|val| {
+            val * age;
+        });
+    }
+    pub fn parallel_increment(arr: &mut Vec<Student>) -> Result<usize, String> {
+        Ok(arr
+            .par_iter_mut()
+            .map(|student| {
+                random_computation(&student.age);
+                student.age * 2
+            })
+            .count())
+    }
+    pub fn serial_increment(arr: &mut Vec<Student>) -> Result<usize, String> {
+        Ok(arr
+            .iter()
+            .map(|student| {
+                random_computation(&student.age);
+                student.age * 2
+            })
+            .count())
     }
 }
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
+}
+
+#[pyclass]
+struct ParseResult {
+    reads: Vec<String>,
+    kmers: Vec<Vec<String>>,
 }
 
 #[pyfunction]
@@ -132,22 +182,61 @@ fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str>
 }
 
 #[pyfunction]
-fn parse_fastq_file_parallel(file_path: String) -> PyResult<Vec<String>> {
-    let mut reader = match fastq::Reader::from_file(file_path) {
+fn parse_fastq_file_parallel<'py>(
+    py: Python<'py>,
+    file_path: String,
+    kmer_length: usize,
+) -> Bound<'py, PyArray2<u8>> {
+    let reader = match fastq::Reader::from_file(file_path) {
         Ok(reader) => reader,
-        Err(_) => return Err(PyErr::new::<PyTypeError, _>("error in reading file")),
+        Err(_) => panic!("error in reading file"),
     };
 
-    let records_list: Vec<Result<Record, _>> = reader.records().collect();
-    records_list.into_par_iter().map(|record| {
-        let record = match record {
-            Ok(record)  => record,
-            Err(e) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
-        };
-        let string_read = str::from_utf8(record.seq()).unwrap();
-        Ok(string_read.to_string())
-    }).collect()
+    let bloom: SyncBloom<String> = SyncBloom::new(1_000_000);
+    let mut hash_map: HashMap<String, u32> = HashMap::new();
 
+    let records_list: Vec<Result<Record, _>> = reader.records().collect();
+
+    let string_reads: Vec<&[u8]> = records_list
+        .into_par_iter()
+        .map(|record| {
+            let record = match record {
+                Ok(record) => record,
+                Err(_) => panic!("invalid record"),
+            };
+
+            record.seq()
+            //let string_read = str::from_utf8(record.seq()).unwrap();
+            //string_read.to_string()
+        })
+        .collect();
+    let utf_reads: Vec<Vec<u8>> = string_reads
+        .par_iter()
+        .map(|read| {
+            //convert chars into utf-u8 format
+            read.chars().map(|char| char as u8).collect()
+        })
+        .collect();
+    let kmers: Vec<Vec<String>> = string_reads
+        .par_iter()
+        .map(|read_string| {
+            let kmers: Vec<String> = read_string
+                .chars()
+                .collect::<Vec<char>>()
+                .windows(kmer_length)
+                .map(|x| x.iter().collect::<String>())
+                .collect();
+
+            kmers.iter().for_each(|kmer| {
+                //use bloom filter and check whether it exists
+            });
+            return kmers;
+        })
+        .collect();
+    let flatten: Vec<u8> = utf_reads.into_par_iter().flatten().collect();
+    Array2::from_shape_vec((string_reads.len(), 100), flatten)
+        .unwrap()
+        .into_pyarray(py)
 }
 //creates python bindings that will be used for parsing fastq files
 #[pyfunction]
@@ -156,6 +245,15 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
         Ok(result) => Ok(result),
         Err(_) => Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
     }
+}
+#[pyfunction]
+fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
+    let mut reader = fastq::Reader::from_file(file_path).unwrap();
+    let records = match reader.records() {
+        Ok(records) => records,
+        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
+    };
+    //let string_reads = records.
 }
 #[pyfunction]
 fn write_fastq_file(
@@ -235,29 +333,40 @@ mod tests {
     use rand::Rng;
     use test::{black_box, Bencher};
 
+    //#[bench]
+    //fn parse_parallel(b: &mut Bencher) {
+    //    //add file here
+    //    let fastq_filepath =
+    //        "/home/g6i1o0/Documents/dask-cuda/genetic-assets/ERR022075_1.fastq".to_string();
+    //    b.iter(|| {
+    //        black_box(functionalities::parse_fastq_file_parallel(
+    //            fastq_filepath.clone(),
+    //            19,
+    //        ))
+    //    });
+    //}
+    //#[bench]
+    //fn parse_serial(b: &mut Bencher) {
+    //    //add file here
+    //    let fastq_filepath =
+    //        "/home/g6i1o0/Documents/dask-cuda/genetic-assets/ERR022075_1.fastq".to_string();
+    //    b.iter(|| black_box(functionalities::parse_fastq_file(fastq_filepath.clone())));
+    //}
     #[bench]
-    fn parse_parallel(b: &mut Bencher) {
-        //add file here
-        let fastq_filepath =
-            "/home/g6i1o0/Documents/dask-cuda/genetic-assets/ecoli_30x_3perc_single.fq".to_string();
-        b.iter(|| {
-            black_box(functionalities::parse_fastq_file_parallel(
-                fastq_filepath.clone(),
-            ))
-        });
-    }
-    #[bench]
-    fn parse_serial(b: &mut Bencher) {
-        //add file here
-        let fastq_filepath =
-            "/home/g6i1o0/Documents/dask-cuda/genetic-assets/ecoli_30x_3perc_single.fq".to_string();
-        b.iter(|| black_box(functionalities::parse_fastq_file(fastq_filepath.clone())));
+    fn increment_serial(b: &mut Bencher) {
+        let mut rng = rand::rng();
+        let mut students: Vec<Student> = (0..20_000_000)
+            .map(|_| Student {
+                age: rng.random_range(0..100),
+            })
+            .collect();
+        b.iter(|| black_box(functionalities::serial_increment(&mut students)));
     }
     #[bench]
     fn increment_parallel(b: &mut Bencher) {
         //add file here
         let mut rng = rand::rng();
-        let mut students: Vec<Student> = (0..200_000)
+        let mut students: Vec<Student> = (0..20_000_000)
             .map(|_| Student {
                 age: rng.random_range(0..100),
             })

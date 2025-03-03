@@ -9,13 +9,16 @@ from Bio import Seq
 from shared_core_correction import *
 from numba import cuda
 from shared_helpers import (
-    test_slice_array,
     to_local_reads,
     back_to_sequence_helper,
 )
 from voting import *
 from kmer import *
-from utility_helpers.utilities import check_votes
+from utility_helpers.utilities import (
+    check_onesided_corrections,
+    check_twosided_corrections,
+    check_votes,
+)
 
 # import seaborn as sns
 # import matplotlib.pyplot as plt
@@ -112,33 +115,47 @@ def test_cuda_array_context():
 
 
 @ray.remote(num_gpus=1, num_cpus=2)
-def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
+def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_idx):
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
     start.record()
-
+    print(f"offset shape: {offsets.shape[0]}")
+    print(f"offset dtype: {offsets.dtype}")
+    print(f"reads dtype: {reads_1d.dtype}")
     # transfering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
+    correction_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
+    onesided_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
 
     # allocating gpu threads
-    tbp = 512
-    bpg = offsets.shape[0] // tbp
+    tpb = 512
+    bpg = (offsets.shape[0] + tpb) // tpb
 
     # invoking the two sided correction kernel
-    two_sided_kernel[bpg, tbp](
+    two_sided_kernel[bpg, tpb](
         dev_kmer_spectrum,
         dev_reads_1d,
         dev_offsets,
         kmer_len,
+        correction_flags,
+        last_end_idx,
     )
+    print(correction_flags.copy_to_host()[offsets.shape[0] - 500 :])
 
     # voting refinement is done within the one_sided_kernel
-    one_sided_kernel[bpg, tbp](
-        dev_kmer_spectrum, dev_reads_1d, dev_offsets, kmer_len, max_votes
+    one_sided_kernel[bpg, tpb](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+        max_votes,
+        correction_flags,
+        onesided_flags,
+        last_end_idx,
     )
 
     end.record()
@@ -147,9 +164,12 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len):
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
+    cuda.synchronize()
     return [
         dev_reads_1d.copy_to_host(),
         max_votes.copy_to_host(),
+        correction_flags.copy_to_host(),
+        onesided_flags.copy_to_host(),
     ]
 
 
@@ -247,8 +267,13 @@ if __name__ == "__main__":
         print(usage)
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
-
+    kmer_len = 19
+    parse_reads_starttime = time.perf_counter()
     reads = fastq_parser.parse_fastq_file(sys.argv[1])
+    parse_reads_endtime = time.perf_counter()
+    print(
+        f"Time it takes to parse reads and kmers {parse_reads_endtime - parse_reads_starttime}"
+    )
     reads_refer_starttime = time.perf_counter()
     reads_reference = ray.put(reads)
     reads_refer_endtime = time.perf_counter()
@@ -262,7 +287,6 @@ if __name__ == "__main__":
     )
     print(f"Length of reads: {len(reads)}")
 
-    kmer_len = 19
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(
@@ -270,8 +294,9 @@ if __name__ == "__main__":
     )
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
     reads_1d = ray.get(
-        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3000000)
+        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3500000)
     )
+    print(reads_1d)
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
@@ -284,7 +309,7 @@ if __name__ == "__main__":
     non_unique_kmers = kmer_occurences[kmer_occurences["multiplicity"] > 1]
     print("Done removing unique kmers")
 
-    occurence_data = non_unique_kmers["multiplicity"].to_numpy()
+    occurence_data = non_unique_kmers["multiplicity"].to_numpy().astype(np.uint64)
     max_occurence = occurence_data.max()
     print(f"max occurence data: {max_occurence}")
 
@@ -300,28 +325,53 @@ if __name__ == "__main__":
     ]
 
     kmer_np = filtered_kmer_df.astype("uint64").to_numpy()
+    print(kmer_np)
     print(f"Number of trusted kmers: {filtered_kmer_df.shape[0]}")
 
     sort_start_time = time.perf_counter()
 
-    sorted_kmer_np = sorted_arr = kmer_np[kmer_np[:, 0].argsort()]
+    sorted_kmer_np = kmer_np[kmer_np[:, 0].argsort()]
+    sorted_by_occurence = kmer_np[kmer_np[:, 1].argsort()[::-1]]
     sort_end_time = time.perf_counter()
 
     print(f"reads 1d length: {len(reads_1d)}")
     # sorting the kmer spectrum in order to make the search faster with binary search
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
-    print(sorted_kmer_np)
+    print(sorted_by_occurence)
 
-    [corrected_reads_array, votes] = ray.get(
-        remote_core_correction.remote(sorted_kmer_np, reads_1d, offsets, kmer_len)
-    )
+    print(offsets)
+    # we will try correcting by batch
+    sorted_kmer_np_reference = ray.put(sorted_kmer_np)
+    correction_batch_size = 3000000
+    correction_result = []
+    last_end_idx = 0
 
-    ray.get(
-        [
-            check_votes.remote(votes[idx : idx + batch_size])
-            for idx in range(0, len(votes), batch_size)
+    # limited_offsets = offsets[:100000].copy()
+    # [corrected_reads_array, votes, corrections, onesided_flags] = ray.get(
+    #     remote_core_correction.remote(sorted_kmer_np_reference, reads_1d, offsets, kmer_len)
+    # )
+    for correction_batch_idx in range(0, offsets.shape[0], correction_batch_size):
+        current_offset_batch = offsets[
+            correction_batch_idx : correction_batch_idx + correction_batch_size
         ]
-    )
+        last_idx = current_offset_batch[-1][1]
+        current_reads = reads_1d[last_end_idx:last_idx]
+        print(f"last end idx: {last_end_idx} last_idx: {last_idx}")
+        [corrected_reads_array, votes, corrections, onesided_flags] = ray.get(
+            remote_core_correction.remote(
+                sorted_kmer_np_reference,
+                current_reads,
+                current_offset_batch,
+                kmer_len,
+                last_end_idx,
+            )
+        )
+        # ray.get([check_twosided_corrections.remote(corrections[idx: idx + batch_size]) for idx in range(0, len(corrections), batch_size)])
+        last_end_idx = last_idx
+        correction_result.append(corrected_reads_array)
+    corrected_reads_array = np.concatenate(correction_result, dtype="uint8")
+
+    print(corrected_reads_array)
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
@@ -334,8 +384,9 @@ if __name__ == "__main__":
 
     write_file_starttime = time.perf_counter()
     print(corrected_2d_reads_array)
+    print(len(corrected_2d_reads_array))
     fastq_data_list = fastq_parser.write_fastq_file(
-        "genetic-assets/please.fastq", sys.argv[1], corrected_2d_reads_array
+        "genetic-assets/work-please.fastq", sys.argv[1], corrected_2d_reads_array
     )
 
     write_file_endtime = time.perf_counter()

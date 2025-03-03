@@ -1,3 +1,4 @@
+import math
 import cudf
 from numba import cuda
 from helpers import (
@@ -5,9 +6,7 @@ from helpers import (
     in_spectrum,
     transform_to_key,
     mark_solids_array,
-    copy_solids,
 )
-from Bio import Seq
 import ray
 
 
@@ -28,20 +27,18 @@ def check_tracker(
 
 
 @cuda.jit(device=True)
-def identify_solid_bases(
-    local_reads, kmer_len, kmer_spectrum, solids, ascii_kmer, size, rep
-):
+def identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, km, size, rep):
 
     for idx in range(0, size + 1):
-        copy_kmer(ascii_kmer, local_reads, idx, idx + kmer_len)
+        copy_kmer(km, local_reads, idx, idx + kmer_len)
         copy_kmer(rep, local_reads, idx, idx + kmer_len)
 
-        # calculate the reverse complement of the current kmer
+        # transform rep kmer into reverse complement representation
         reverse_comp(rep, kmer_len)
 
         # consider who is lexicographically smaller
-        if lower(rep, ascii_kmer):
-            copy_kmer(rep, ascii_kmer, 0, kmer_len)
+        if lower(rep, km, kmer_len):
+            copy_kmer(rep, km, 0, kmer_len)
 
         curr_kmer = transform_to_key(rep, kmer_len)
 
@@ -106,16 +103,6 @@ def to_local_reads(reads_1d, local_reads, start, end):
         local_reads[idx - start] = reads_1d[idx]
 
 
-@ray.remote(num_cpus=1)
-def transform_back_to_row_reads(reads, batch_start, batch_end, offsets):
-
-    for batch_idx in range(batch_start, batch_end):
-        start, end = offsets[batch_idx][0], offsets[batch_idx][1]
-
-
-# from jagged array to 2 dimensional array
-
-
 @ray.remote(num_cpus=1, num_gpus=1)
 def back_to_sequence_helper(reads, offsets):
 
@@ -123,7 +110,7 @@ def back_to_sequence_helper(reads, offsets):
     offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
     offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
     max_segment_length = offsets_df["length"].max()
-
+    print(f"max segment length: {max_segment_length}")
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
@@ -141,58 +128,12 @@ def back_to_sequence_helper(reads, offsets):
 
     end.record()
     end.synchronize()
+    cuda.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
     cuda.profile_stop()
 
     return dev_reads_result.copy_to_host()
-
-
-@ray.remote(num_cpus=1)
-def increment_array(arr):
-    for value in arr:
-        value += 1
-    return arr
-
-
-# this task is slow because it returns a Sequence object that needs to be serialized
-# ray serializes object references and raw data
-@ray.remote(num_cpus=1)
-def assign_sequence(read_batch, sequence_batch):
-    translation_table = str.maketrans({"1": "A", "2": "C", "3": "G", "4": "T"})
-    for int_read, sequence in zip(read_batch, sequence_batch):
-        non_zeros_int_read = [x for x in int_read if x != 0]
-        read_string = "".join(map(str, non_zeros_int_read))
-        ascii_read_string = read_string.translate(translation_table)
-        if len(ascii_read_string) != 100:
-            print(ascii_read_string)
-        sequence.seq = Seq.Seq(ascii_read_string)
-
-    return sequence_batch
-
-
-@cuda.jit
-def calculate_reads_solidity(reads, offsets, solids_array, kmer_len, kmer_spectrum):
-    threadIdx = cuda.grid(1)
-    if threadIdx <= offsets.shape[0]:
-        MAX_LEN = 300
-        local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
-        local_solids = cuda.local.array(MAX_LEN, dtype="int8")
-        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-
-        for idx in range(end - start):
-            local_solids[idx] = -1
-
-        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-
-        # copy global reads into local variable
-        for idx in range(end - start):
-            local_reads[idx] = reads[idx + start]
-
-        identify_solid_bases(
-            local_reads, start, end, kmer_len, kmer_spectrum, local_solids
-        )
-        copy_solids(threadIdx, local_solids, solids_array)
 
 
 @cuda.jit
@@ -208,7 +149,7 @@ def back_sequence_kernel(reads, offsets, reads_result):
         to_decimal_ascii(local_reads, seqlen)
 
         # copy the assigned read for this thread into the 2d reads_result
-        for idx in range(end - start):
+        for idx in range(seqlen):
             reads_result[threadIdx][idx] = local_reads[idx]
 
 
@@ -256,7 +197,7 @@ def count_error_reads(solids_batch, len):
 @cuda.jit(device=True)
 def successor_v2(
     kmer_length,
-    local_read,
+    aux_local_read,
     aux_kmer,
     kmer_spectrum,
     alternative_base,
@@ -275,7 +216,8 @@ def successor_v2(
     idx = 0
     counter = kmer_length - 2
     while idx <= end_idx:
-        forward_base(aux_kmer, local_read[offset + idx + kmer_length - 1], kmer_length)
+        # forward_base(aux_kmer, local_read[offset + idx + kmer_length -1], kmer_length)
+        copy_kmer(aux_kmer, aux_local_read, offset + idx, offset + idx + kmer_length)
         aux_kmer[counter] = alternative_base
 
         # check which is lexicographically smaller between original succeeding kmer and reverse complemented succeeding kmer
@@ -283,7 +225,7 @@ def successor_v2(
         reverse_comp(rep, kmer_length)
 
         # choose lexicographically smaller
-        if lower(rep, aux_kmer):
+        if lower(rep, aux_kmer, kmer_length):
             copy_kmer(rep, aux_kmer, 0, kmer_length)
 
         transformed_alternative_kmer = transform_to_key(rep, kmer_length)
@@ -338,18 +280,20 @@ def predeccessor_v2(
     distance,
     rep,
 ):
-    ipos = target_pos - 1
-    if ipos < 0 or distance <= 0:
+    # ipos is the first preceeding neighbor
+    # ipos = target_pos - 1
+    if target_pos <= 0 or distance <= 0:
         return True
-    spos = max(0, ipos - distance)
+
+    spos = max(0, target_pos - distance)
     counter = 1
-    idx = ipos
+    idx = target_pos - 1
     while idx >= spos:
         copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
         aux_kmer[counter] = alternative_base
         copy_kmer(rep, aux_kmer, 0, kmer_length)
         reverse_comp(rep, kmer_length)
-        if lower(rep, aux_kmer):
+        if lower(rep, aux_kmer, kmer_length):
             copy_kmer(rep, aux_kmer, 0, kmer_length)
 
         candidate = transform_to_key(rep, kmer_length)
@@ -397,19 +341,7 @@ def all_solid_base(solids, seqlen):
     return True
 
 
-@cuda.jit(device=True)
-def test_copying(arr1):
-    for idx in range(5):
-        arr1[idx] = idx + 1
-
-
-@cuda.jit()
-def test_slice_array(arr, aux_arr_storage, arr_len):
-    threadIdx = cuda.grid(1)
-    if threadIdx <= arr_len:
-        local_kmer = cuda.local.array(21, dtype="uint8")
-
-
+# copy contents of local read from its start to end
 @cuda.jit(device=True)
 def copy_kmer(aux_kmer, local_read, start, end):
     for i in range(start, end):
@@ -422,10 +354,11 @@ def select_mutations(
 ):
     # calculate the pos value considering rev_comp flag
     num_bases = 0
-    if rev_comp:
-        pos = kmer_len - 1 - pos
+    base_index = pos
+    if rev_comp and pos < kmer_len:
+        base_index = kmer_len - 1 - pos
 
-    original_base = km[pos]
+    original_base = km[base_index]
     copy_kmer(aux_km, km, 0, kmer_len)
 
     for base in bases:
@@ -434,26 +367,28 @@ def select_mutations(
         else:
             # consider the reverse complement of mutated aux_km and store in aux_km2
 
-            aux_km[pos] = base
+            aux_km[base_index] = base
             copy_kmer(aux_km2, aux_km, 0, kmer_len)
             reverse_comp(aux_km2, kmer_len)
 
             # check if whose lexicographically smaller between auxKm2 and auxkm
-            if lower(aux_km2, aux_km):
+            if lower(aux_km2, aux_km, kmer_len):
                 copy_kmer(aux_km2, aux_km, 0, kmer_len)
 
             # use the lexicographically small during checking the spectrum
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
-                selected_bases[num_bases][1] = give_kmer_multiplicity(
-                    spectrum, candidate
-                )
                 # use complement of selected base if rev comp flag is active
                 if rev_comp:
                     base = complement(base)
 
-                selected_bases[num_bases][0] = base
-                num_bases += 1
+                # add range restriction
+                if base > 0 and base < 5:
+                    selected_bases[num_bases][0] = base
+                    selected_bases[num_bases][1] = give_kmer_multiplicity(
+                        spectrum, candidate
+                    )
+                    num_bases += 1
 
     return num_bases
 
@@ -470,23 +405,20 @@ def backward_base(ascii_kmer, base, kmer_length):
 # forward the base or shifts bases to the right
 @cuda.jit(device=True)
 def forward_base(ascii_kmer, base, kmer_length):
-    for idx in range(0, kmer_length):
-        if idx == (kmer_length - 1):
-            ascii_kmer[idx] = base
-        else:
-            ascii_kmer[idx] = ascii_kmer[idx + 1]
+    for idx in range(0, (kmer_length - 1)):
+        ascii_kmer[idx] = ascii_kmer[idx + 1]
+    ascii_kmer[kmer_length - 1] = base
 
 
-# this might be unnecessary slow
+# checks if aux_kmer is lexicographically smaller than kmer
 @cuda.jit(device=True)
-def lower(kmer, aux_kmer):
-    DEFAULT_KMERLEN = 19
-    for idx in range(DEFAULT_KMERLEN):
-        if aux_kmer[idx] == kmer[idx]:
-            continue
+def lower(kmer, aux_kmer, kmer_len):
+    for idx in range(0, kmer_len):
+        if aux_kmer[idx] > kmer[idx]:
+            return False
         elif aux_kmer[idx] < kmer[idx]:
             return True
-        return False
+    return False
 
 
 @cuda.jit(device=True)
@@ -527,7 +459,12 @@ def to_decimal_ascii(local_read, seqlen):
             local_read[idx] = 71
         elif local_read[idx] == 4:
             local_read[idx] = 84
-        elif local_read[idx] == 5:
-            local_read[idx] = 78
         else:
-            local_read[idx] = 0
+            local_read[idx] = 78
+
+
+@cuda.jit(device=True)
+def encode_bases(bases, seqlen):
+    for idx in range(0, seqlen):
+        if bases[idx] == 5:
+            bases[idx] = 1
