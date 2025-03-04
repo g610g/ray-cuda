@@ -5,17 +5,18 @@ import numpy as np
 # batch_size = size // cpus
 
 
-# arr = [2, 3]
-# [two, three] = arr
-# two += 1
-# print(arr)
-# print(two)
-# # idx = [(batch_idx // batch_size) for batch_idx in range(0, size, batch_size)]
-# # kmer_len = 5
-# # reads = np.arange(14)
-# # kmer_counter_list = np.zeros((len(reads) - (kmer_len - 1)), dtype="uint8")
-# for idx in range(0, -1):
-#     print(idx)
+def transform_key(km, len):
 
-arr = np.arange(1, 10, 1, dtype='uint16')
-print(arr)
+    multiplier = 1
+    key = 0
+    while len != 0:
+        key += km[len - 1] * multiplier
+        multiplier *= 10
+        len -= 1
+
+    return key
+np_arr = np.array([3,2,2,1,2,4,4,4,4,1,4,3,3,2,3,1,1,3,2] )
+# sorted_by_first_col = np_arr[np_arr[:, 0].argsort()]
+# sorted_by_second_col = np_arr[np_arr[:, 1].argsort()]
+print(transform_key(np_arr, 19))
+

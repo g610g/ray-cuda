@@ -37,11 +37,11 @@ def to_array_kmer(km, kmer_length, whole_number_km):
 
 
 @cuda.jit(device=True)
-def transform_to_key(ascii_kmer, len):
+def transform_to_key(km, len):
     multiplier = 1
     key = 0
     while len != 0:
-        key += ascii_kmer[len - 1] * multiplier
+        key += km[len - 1] * multiplier
         multiplier *= 10
         len -= 1
 

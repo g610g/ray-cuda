@@ -27,11 +27,11 @@ def check_tracker(
 
 
 @cuda.jit(device=True)
-def identify_solid_bases(local_reads, kmer_len, kmer_spectrum, solids, km, size, rep):
+def identify_solid_bases(encoded_base, kmer_len, kmer_spectrum, solids, km, size, rep):
 
     for idx in range(0, size + 1):
-        copy_kmer(km, local_reads, idx, idx + kmer_len)
-        copy_kmer(rep, local_reads, idx, idx + kmer_len)
+        copy_kmer(km, encoded_base, idx, idx + kmer_len)
+        copy_kmer(rep, km, 0, kmer_len)
 
         # transform rep kmer into reverse complement representation
         reverse_comp(rep, kmer_len)
@@ -468,3 +468,9 @@ def encode_bases(bases, seqlen):
     for idx in range(0, seqlen):
         if bases[idx] == 5:
             bases[idx] = 1
+
+
+@cuda.jit(device=True)
+def seed_ones(local_read, seqlen):
+    for idx in range(seqlen):
+        local_read[idx] = 1

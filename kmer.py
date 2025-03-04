@@ -90,9 +90,7 @@ class KmerExtractorGPU:
             read_df = read_s.to_frame()
 
             replaced_df = read_df["reads"].str.replace("N", "A")
-
             read_df["translated"] = replaced_df.str.translate(self.translation_table)
-
             ngram_kmers = read_df["translated"].str.character_ngrams(
                 self.kmer_length, True
             )
@@ -108,24 +106,22 @@ class KmerExtractorGPU:
             .reset_index()
         )
         final_result.columns = ["translated", "multiplicity"]
+        print(final_result)
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"final result shape is: {final_result.shape}")
-        print(f"final result is: {final_result}")
         print(f"Kmers before calculating canonical kmers: {final_result}")
         kmers_np = self.check_rev_comp_kmer(final_result)
 
-        if len(kmers_np[:, 0]) == len(kmers_np[:, 1]):
-            final_kmers = (
-                cudf.DataFrame(
-                    {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
-                )
-                .groupby("canonical")
-                .sum()
-                .reset_index()
+        final_kmers = (
+            cudf.DataFrame(
+                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
             )
-
-            print(f"Kmers after calculating canonical kmers: {final_kmers}")
-            return final_kmers
+            .groupby("canonical")
+            .sum()
+            .reset_index()
+        )
+        print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
     def calculate_kmers_multiplicity(self, reads, batch_size):
