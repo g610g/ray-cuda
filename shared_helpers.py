@@ -128,7 +128,6 @@ def back_to_sequence_helper(reads, offsets):
 
     end.record()
     end.synchronize()
-    cuda.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
     cuda.profile_stop()
@@ -361,13 +360,13 @@ def select_mutations(
     original_base = km[base_index]
     copy_kmer(aux_km, km, 0, kmer_len)
 
-    for base in bases:
-        if base == original_base:
+    for idx in range(4):
+        if bases[idx] == original_base:
             continue
         else:
             # consider the reverse complement of mutated aux_km and store in aux_km2
 
-            aux_km[base_index] = base
+            aux_km[base_index] = bases[idx]
             copy_kmer(aux_km2, aux_km, 0, kmer_len)
             reverse_comp(aux_km2, kmer_len)
 
@@ -379,8 +378,9 @@ def select_mutations(
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
                 # use complement of selected base if rev comp flag is active
+                base = bases[idx]
                 if rev_comp:
-                    base = complement(base)
+                    base = complement(bases[idx])
 
                 # add range restriction
                 if base > 0 and base < 5:
@@ -391,7 +391,6 @@ def select_mutations(
                     num_bases += 1
 
     return num_bases
-
 
 # backward the base or shifts bases to the left
 @cuda.jit(device=True)

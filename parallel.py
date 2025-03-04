@@ -106,13 +106,10 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
     correction_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
-    onesided_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
-    solids = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype='int8'))
-    corrected_tracker = cuda.to_device(np.zeros(offsets.shape[0], dtype='int8'))
     # allocating gpu threads
-    tpb = 256
-    # bpg = (offsets.shape[0] + tpb) // tpb
-    bpg = math.ceil(offsets.shape[0] // tpb)
+    tpb = 512
+    bpg = (offsets.shape[0] + tpb) // tpb
+    # bpg = math.ceil(offsets.shape[0] // tpb)
 
     # invoking the two sided correction kernel
     two_sided_kernel[bpg, tpb](
@@ -122,20 +119,16 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
         kmer_len,
         correction_flags,
         last_end_idx,
-        solids,
-        corrected_tracker
     )
     # voting refinement is done within the one_sided_kernel
-    # one_sided_kernel[bpg, tpb](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    #     max_votes,
-    #     correction_flags,
-    #     onesided_flags,
-    #     last_end_idx,
-    # )
+    one_sided_kernel[bpg, tpb](
+        dev_kmer_spectrum,
+        dev_reads_1d,
+        dev_offsets,
+        kmer_len,
+        max_votes,
+        correction_flags,
+    )
 
     end.record()
     end.synchronize()
@@ -143,14 +136,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return [
-        dev_reads_1d.copy_to_host(),
-        max_votes.copy_to_host(),
-        correction_flags.copy_to_host(),
-        onesided_flags.copy_to_host(),
-        solids.copy_to_host(),
-        corrected_tracker.copy_to_host(),
-    ]
+    return dev_reads_1d.copy_to_host()
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -270,7 +256,7 @@ if __name__ == "__main__":
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
     kmer_occurences = ray.get(
-        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3000000)
+        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000)
     )
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
     reads_1d = ray.get(
@@ -325,11 +311,13 @@ if __name__ == "__main__":
     correction_result = []
     last_end_idx = 0
 
-    [corrected_reads_array, votes, corrections, onesided_flags, solids, corrected_tracker] = ray.get(
+    corrected_reads_array = ray.get(
         remote_core_correction.remote(
             sorted_kmer_np_reference, reads_1d, offsets, kmer_len, last_end_idx
         )
     )
+    print(corrected_reads_array)
+    print(corrected_reads_array.dtype)
     # for correction_batch_idx in range(0, offsets.shape[0], correction_batch_size):
     #     current_offset_batch = offsets[
     #         correction_batch_idx : correction_batch_idx + correction_batch_size
@@ -371,14 +359,14 @@ if __name__ == "__main__":
     #         for idx in range(0, len(solids), batch_size)
     #     ]
     # )
-    ray.get(
-        [
-            check_has_corrected.remote(
-                corrected_tracker[idx : idx + batch_size] 
-            )
-            for idx in range(0, len(corrected_tracker), batch_size)
-        ]
-    )
+    # ray.get(
+    #     [
+    #         check_has_corrected.remote(
+    #             corrected_tracker[idx : idx + batch_size] 
+    #         )
+    #         for idx in range(0, len(corrected_tracker), batch_size)
+    #     ]
+    # )
     back_sequence_end_time = time.perf_counter()
     print(
         f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}"

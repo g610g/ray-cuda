@@ -168,8 +168,9 @@ def two_sided_kernel(
                 encoded_bases,
             )
             # this read is error free. Stop correction
-            if num_corrections == 2:
-                #apply corrections 
+            # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
+            # returning, we have to copy it back into global memory stored reads
+            if num_corrections == 0:
                 copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
                 for idx in range(0, seqlen):
                     reads[idx + start] = local_reads[idx]
@@ -188,14 +189,12 @@ def two_sided_kernel(
         copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
         corrections_flag[threadIdx] = corrections_counter
 
-        cuda.syncthreads()
-
         # bring local read back to global memory reads
+        
         for idx in range(0, seqlen):
             reads[idx + start] = local_reads[idx]
-
+        cuda.syncthreads()
         return
-
 
 @cuda.jit(device=True)
 def correct_two_sided(
@@ -214,7 +213,7 @@ def correct_two_sided(
     aux_km2,
     encoded_bases,
 ):
-    # solids clear
+    # clear solids
     for i in range(0, seqlen):
         solids[i] = -1
 
@@ -226,7 +225,7 @@ def correct_two_sided(
     )
     # check whether solids array does not contain -1, return 0 if yes
     if all_solid_base(solids, seqlen):
-        return 2
+        return 0
 
     # for bases index 0 until size
     klen_idx = kmer_len - 1
@@ -390,8 +389,6 @@ def one_sided_kernel(
     kmer_len,
     max_votes,
     correction_flags,
-    onesided_flags,
-    last_end_idx,
 ):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
@@ -420,6 +417,9 @@ def one_sided_kernel(
         seqlen = end - start
 
 
+        if correction_flags[threadIdx] == 0:
+            return
+
         # seeding bases 1 to 4
         for i in range(0, 4):
             bases[i] = i + 1
@@ -428,11 +428,6 @@ def one_sided_kernel(
         for idx in range(0, seqlen):
             local_read[idx] = reads[start + idx]
 
-        if correction_flags[threadIdx] == 0:
-            seed_ones(local_read, seqlen)
-            for idx in range(0, seqlen):
-                reads[start + idx] = local_read[idx]
-            return
 
         for nerr in range(1, maxIters + 1):
 
@@ -510,9 +505,8 @@ def one_sided_kernel(
 
         # copies back corrected local read into global memory stored reads
         for idx in range(0, seqlen):
-            # seed_ones(local_read, seqlen)
             reads[start + idx] = local_read[idx]
-
+        cuda.syncthreads()
 
 # for orientation going to the right of the read
 @cuda.jit(device=True)
@@ -891,4 +885,4 @@ def one_sided_v2(
         # endfor lkmer_idx to 0
 
     # endfor regions_count
-    return corrections_made
+    return 1

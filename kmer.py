@@ -76,10 +76,11 @@ class KmerExtractorGPU:
             np.zeros((kmer_np.shape[0], self.kmer_length), dtype="uint8")
         )
         tbp = 1024
-        bpg = math.ceil(kmer_np.shape[0] / tbp)
+        # bpg = math.ceil(kmer_np.shape[0] / tbp)
+        bpg = (kmer_np.shape[0] + tbp) // tbp
         reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length, dev_kmer_array)
         kmers = dev_kmers.copy_to_host()
-        return kmers
+        return [kmers, dev_kmer_array.copy_to_host()]
 
     # store the dataframe as state of this worker to be used by downstream tasks
     def calculate_kmers_multiplicity_batch(self, reads, batch_size):
@@ -105,12 +106,12 @@ class KmerExtractorGPU:
             .sum()
             .reset_index()
         )
-        final_result.columns = ["translated", "multiplicity"]
         print(final_result)
+        final_result.columns = ["translated", "multiplicity"]
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"final result shape is: {final_result.shape}")
         print(f"Kmers before calculating canonical kmers: {final_result}")
-        kmers_np = self.check_rev_comp_kmer(final_result)
+        [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(final_result)
 
         final_kmers = (
             cudf.DataFrame(
