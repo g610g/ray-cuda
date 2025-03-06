@@ -65,11 +65,11 @@ def cast_votes(
 
             original_base = rep[idx]
 
-            for base in bases:
-                if original_base == base:
+            for i in range(4):
+                if original_base == bases[i]:
                     continue
                 copy_kmer(aux_kmer, rep, 0, kmer_len)
-                aux_kmer[idx] = base
+                aux_kmer[idx] = bases[i]
                 copy_kmer(aux_km2, aux_kmer, 0, kmer_len)
                 reverse_comp(aux_km2, kmer_len)
 
@@ -78,8 +78,9 @@ def cast_votes(
 
                 candidate = transform_to_key(aux_km2, kmer_len)
                 if in_spectrum(kmer_spectrum, candidate):
+                    base = bases[i]
                     if rev_comp:
-                        base = complement(base)
+                        base = complement(bases[i])
 
                     # add restriction range
                     if base > 0 and base < 5:
@@ -388,7 +389,6 @@ def one_sided_kernel(
     offsets,
     kmer_len,
     max_votes,
-    correction_flags,
 ):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
@@ -403,6 +403,8 @@ def one_sided_kernel(
         region_indices = cuda.local.array((20, 2), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
         selected_bases = cuda.local.array((4, 2), dtype="uint64")
+        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
@@ -415,10 +417,7 @@ def one_sided_kernel(
         maxIters = 4
         min_vote = 3
         seqlen = end - start
-
-
-        if correction_flags[threadIdx] == 0:
-            return
+        size = seqlen - kmer_len
 
         # seeding bases 1 to 4
         for i in range(0, 4):
@@ -428,7 +427,37 @@ def one_sided_kernel(
         for idx in range(0, seqlen):
             local_read[idx] = reads[start + idx]
 
+        for _ in range(0, 2):
+            num_corrections = correct_two_sided(
+                seqlen,
+                kmer_spectrum,
+                km,
+                aux_km,
+                kmer_len,
+                bases,
+                solids,
+                local_read,
+                lpossible_base_mutations,
+                rpossible_base_mutations,
+                size,
+                rep,
+                aux_km2,
+                encoded_bases,
+            )
 
+            # this read is error free. Stop correction
+            # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
+            # returning, we have to copy it back into global memory stored reads
+            if num_corrections == 0:
+                for idx in range(0, seqlen):
+                    reads[idx + start] = local_read[idx]
+                return
+
+            # this read has more one than error within a kmer. Pass the read to one sided correction
+            if num_corrections == -1:
+                break
+
+        # endfor max_iters
         for nerr in range(1, maxIters + 1):
 
             distance = maxIters - nerr + 1
@@ -462,7 +491,6 @@ def one_sided_kernel(
 
                 # returns -1 means all bases are solid
                 if corrections_made == -1:
-                    # seed_ones(local_read, seqlen)
                     for idx in range(0, seqlen):
                         reads[start + idx] = local_read[idx]
                     return

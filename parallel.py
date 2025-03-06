@@ -107,19 +107,19 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
     correction_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
     # allocating gpu threads
-    tpb = 512
+    tpb = 256
     bpg = (offsets.shape[0] + tpb) // tpb
     # bpg = math.ceil(offsets.shape[0] // tpb)
 
     # invoking the two sided correction kernel
-    two_sided_kernel[bpg, tpb](
-        dev_kmer_spectrum,
-        dev_reads_1d,
-        dev_offsets,
-        kmer_len,
-        correction_flags,
-        last_end_idx,
-    )
+    # two_sided_kernel[bpg, tpb](
+    #     dev_kmer_spectrum,
+    #     dev_reads_1d,
+    #     dev_offsets,
+    #     kmer_len,
+    #     correction_flags,
+    #     last_end_idx,
+    # )
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tpb](
         dev_kmer_spectrum,
@@ -127,7 +127,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
         dev_offsets,
         kmer_len,
         max_votes,
-        correction_flags,
+        # correction_flags,
     )
 
     end.record()
