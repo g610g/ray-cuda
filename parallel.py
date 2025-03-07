@@ -100,26 +100,18 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     print(f"offset shape: {offsets.shape[0]}")
     print(f"offset dtype: {offsets.dtype}")
     print(f"reads dtype: {reads_1d.dtype}")
+    print(f"Kmer spectrum: {kmer_spectrum}")
     # transfering necessary data into GPU side
     dev_reads_1d = cuda.to_device(reads_1d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
-    correction_flags = cuda.to_device(np.zeros(offsets.shape[0], dtype="int8"))
+    dev_reads_2d = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="uint8"))
     # allocating gpu threads
     tpb = 256
     bpg = (offsets.shape[0] + tpb) // tpb
     # bpg = math.ceil(offsets.shape[0] // tpb)
 
-    # invoking the two sided correction kernel
-    # two_sided_kernel[bpg, tpb](
-    #     dev_kmer_spectrum,
-    #     dev_reads_1d,
-    #     dev_offsets,
-    #     kmer_len,
-    #     correction_flags,
-    #     last_end_idx,
-    # )
     # voting refinement is done within the one_sided_kernel
     one_sided_kernel[bpg, tpb](
         dev_kmer_spectrum,
@@ -127,7 +119,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
         dev_offsets,
         kmer_len,
         max_votes,
-        # correction_flags,
+        dev_reads_2d,
     )
 
     end.record()
@@ -136,7 +128,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return dev_reads_1d.copy_to_host()
+    return dev_reads_2d.copy_to_host()
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -302,9 +294,9 @@ if __name__ == "__main__":
     print(f"reads 1d length: {len(reads_1d)}")
     # sorting the kmer spectrum in order to make the search faster with binary search
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
-    print(sorted_by_occurence[:100])
-
-    print(offsets)
+    print(f"sorted by occurence {sorted_by_occurence[:100]}")
+    print(f"sorted by kmer {sorted_kmer_np[:100]}")
+    print(f"offsets {offsets}")
     # we will try correcting by batch
     sorted_kmer_np_reference = ray.put(sorted_kmer_np)
     correction_batch_size = 1000000
@@ -376,7 +368,7 @@ if __name__ == "__main__":
     print(corrected_2d_reads_array)
     print(len(corrected_2d_reads_array))
     fastq_data_list = fastq_parser.write_fastq_file(
-        "genetic-assets/please.fastq", sys.argv[1], corrected_2d_reads_array
+        "genetic-assets/final_data/please.fastq", sys.argv[1], corrected_2d_reads_array
     )
 
     write_file_endtime = time.perf_counter()

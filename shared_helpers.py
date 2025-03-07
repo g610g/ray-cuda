@@ -42,7 +42,7 @@ def identify_solid_bases(encoded_base, kmer_len, kmer_spectrum, solids, km, size
 
         curr_kmer = transform_to_key(rep, kmer_len)
 
-        # use the lexicographical small represenataion and set the bases as solids
+        # use the lexicographical small representation and set the bases as solids
         if in_spectrum(kmer_spectrum, curr_kmer):
             mark_solids_array(solids, idx, idx + kmer_len)
 
@@ -132,7 +132,7 @@ def back_to_sequence_helper(reads, offsets):
     print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
     cuda.profile_stop()
 
-    return dev_reads_result.copy_to_host()
+    return dev_reads.copy_to_host()
 
 
 @cuda.jit
@@ -144,13 +144,13 @@ def back_sequence_kernel(reads, offsets, reads_result):
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         seqlen = end - start
 
-        to_local_reads(reads, local_reads, start, end)
-        to_decimal_ascii(local_reads, seqlen)
+        # to_local_reads(reads, local_reads, start, end)
+        to_decimal_ascii(reads[threadIdx], seqlen)
 
         # copy the assigned read for this thread into the 2d reads_result
-        for idx in range(seqlen):
-            reads_result[threadIdx][idx] = local_reads[idx]
-
+        # for idx in range(seqlen):
+        #     reads_result[threadIdx][idx] = local_reads[idx]
+        #
 
 # normal python function for giving insights by differentiating before and after solids
 def differ_solids(solids_before, solids_after):
@@ -355,7 +355,7 @@ def select_mutations(
     num_bases = 0
     base_index = pos
     if rev_comp and pos < kmer_len:
-        base_index = kmer_len - 1 - pos
+        base_index = (kmer_len - 1) - pos
 
     original_base = km[base_index]
     copy_kmer(aux_km, km, 0, kmer_len)
@@ -443,9 +443,9 @@ def complement(base):
         return 2
     elif base == 4:
         return 1
-    else:
-        return 5
-
+    # else:
+    #     return 5
+    return 0
 
 @cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):
@@ -458,7 +458,7 @@ def to_decimal_ascii(local_read, seqlen):
             local_read[idx] = 71
         elif local_read[idx] == 4:
             local_read[idx] = 84
-        else:
+        elif local_read[idx] == 5:
             local_read[idx] = 78
 
 

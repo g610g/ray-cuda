@@ -62,7 +62,7 @@ def give_kmer_multiplicity(kmer_spectrum, kmer):
     if index != -1:
         return kmer_spectrum[index][1]
 
-    return index
+    return 0
 
 
 @cuda.jit(device=True)
