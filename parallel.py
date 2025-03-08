@@ -217,8 +217,30 @@ class GPUPing:
 def ping_resources():
     print(ray.cluster_resources())
 
+@cuda.jit()
+def kernel_test(dev_arr):
+    threadIdx = cuda.grid(1)
+    odd = True
+    arr = dev_arr[threadIdx]
+    for i in range(len(arr)):
+        if i % 2 == 0:
+            odd = False
+        if odd:
+            dev_arr[threadIdx][i] = 1
+        else:
+            dev_arr[threadIdx][i] = 2
+        odd = True
+@ray.remote(num_gpus=1)
+def test():
+    arr = np.zeros((100, 100), dtype='int64')
+    dev_arr = cuda.to_device(arr)
+    tpb = len(arr)
+    bpg = (len(arr) + tpb) // tpb
+    kernel_test[bpg, tpb](dev_arr)
+    return dev_arr.copy_to_host()
 
 if __name__ == "__main__":
+    print(ray.get(test.remote()))
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -247,6 +269,7 @@ if __name__ == "__main__":
 
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
+
     kmer_occurences = ray.get(
         gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000)
     )
@@ -368,7 +391,7 @@ if __name__ == "__main__":
     print(corrected_2d_reads_array)
     print(len(corrected_2d_reads_array))
     fastq_data_list = fastq_parser.write_fastq_file(
-        "genetic-assets/final_data/please.fastq", sys.argv[1], corrected_2d_reads_array
+        "genetic-assets/final_data/ecoli_datasets/please.fastq", sys.argv[1], corrected_2d_reads_array
     )
 
     write_file_endtime = time.perf_counter()

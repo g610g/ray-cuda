@@ -347,6 +347,7 @@ def copy_kmer(aux_kmer, local_read, start, end):
         aux_kmer[i - start] = local_read[i]
 
 
+#find base mutations for a kmer
 @cuda.jit(device=True)
 def select_mutations(
     spectrum, bases, km, kmer_len, pos, selected_bases, rev_comp, aux_km, aux_km2
@@ -445,7 +446,7 @@ def complement(base):
         return 1
     # else:
     #     return 5
-    return 0
+    return 5
 
 @cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):

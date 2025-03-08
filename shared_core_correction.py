@@ -104,10 +104,10 @@ def cast_votes(
 def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
     for ipos in range(seq_len):
         alternative_base = -1
-        for base in bases:
-            if vm[ipos][base - 1] == max_vote:
+        for idx in range(4):
+            if vm[ipos][bases[idx] - 1] == max_vote:
                 if alternative_base == -1:
-                    alternative_base = base
+                    alternative_base = bases[idx]
                 else:
                     alternative_base = -1
         # apply the base correction if we have found an alternative base
@@ -115,91 +115,92 @@ def apply_voting_result(local_read, vm, seq_len, bases, max_vote):
             local_read[ipos] = alternative_base
 
 
-@cuda.jit
-def two_sided_kernel(
-    kmer_spectrum, reads, offsets, kmer_len, corrections_flag, last_end_idx, dev_solids, corrected_tracker
-):
-    threadIdx = cuda.grid(1)
-
-    # if the rightside and leftside are present in the kmer spectrum, then assign 1 into the result. Otherwise, 0
-    if threadIdx < offsets.shape[0]:
-
-        # find the read assigned to this thread
-        start, end = offsets[threadIdx][0], offsets[threadIdx][1]
-        # start, end = initial_start - last_end_idx, initial_end - last_end_idx
-        MAX_LEN = 300
-        KMER_LEN = 19
-        bases = cuda.local.array(4, dtype="uint8")
-        solids = cuda.local.array(MAX_LEN, dtype="int8")
-        local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
-        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
-        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
-        aux_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
-        km = cuda.local.array(KMER_LEN, dtype="uint8")
-        aux_km2 = cuda.local.array(KMER_LEN, dtype="uint8")
-        rep = cuda.local.array(KMER_LEN, dtype="uint8")
-        encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
-
-        seqlen = end - start
-        size = seqlen - kmer_len
-
-        # this should be a terminal argument
-        max_iters = 2
-        corrections_counter = 0
-
-        # we try to transfer the reads assigned for this thread into its private memory for memory access issues
-        for idx in range(0, seqlen):
-            local_reads[idx] = reads[idx + start]
-
-        for i in range(0, 4):
-            bases[i] = i + 1
-
-        for _ in range(0, max_iters):
-            num_corrections = correct_two_sided(
-                seqlen,
-                kmer_spectrum,
-                km,
-                aux_kmer,
-                kmer_len,
-                bases,
-                solids,
-                local_reads,
-                lpossible_base_mutations,
-                rpossible_base_mutations,
-                size,
-                rep,
-                aux_km2,
-                encoded_bases,
-            )
-            # this read is error free. Stop correction
-            # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
-            # returning, we have to copy it back into global memory stored reads
-            if num_corrections == 0:
-                copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
-                for idx in range(0, seqlen):
-                    reads[idx + start] = local_reads[idx]
-
-                corrections_flag[threadIdx] = 0
-                return
-
-            # this read has more one than error within a kmer. Pass the read to one sided correction
-            if num_corrections == -1:
-                corrections_counter = -1
-                break
-
-            corrected_tracker[threadIdx] = 1
-            corrections_counter = 1
-        # endfor max_iters
-        copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
-        corrections_flag[threadIdx] = corrections_counter
-
-        # bring local read back to global memory reads
-        
-        for idx in range(0, seqlen):
-            reads[idx + start] = local_reads[idx]
-        cuda.syncthreads()
-        return
-
+# @cuda.jit
+# def two_sided_kernel(
+#     kmer_spectrum, reads, offsets, kmer_len, corrections_flag, last_end_idx, dev_solids, corrected_tracker
+# ):
+#     threadIdx = cuda.grid(1)
+#
+#     # if the rightside and leftside are present in the kmer spectrum, then assign 1 into the result. Otherwise, 0
+#     if threadIdx < offsets.shape[0]:
+#
+#         # find the read assigned to this thread
+#         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
+#         # start, end = initial_start - last_end_idx, initial_end - last_end_idx
+#         MAX_LEN = 300
+#         KMER_LEN = 19
+#         bases = cuda.local.array(4, dtype="uint8")
+#         solids = cuda.local.array(MAX_LEN, dtype="int8")
+#         local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
+#         rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+#         lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+#         aux_kmer = cuda.local.array(KMER_LEN, dtype="uint8")
+#         km = cuda.local.array(KMER_LEN, dtype="uint8")
+#         aux_km2 = cuda.local.array(KMER_LEN, dtype="uint8")
+#         rep = cuda.local.array(KMER_LEN, dtype="uint8")
+#         encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
+#         two_sided_corrections = cuda.local.array((4, 2), dtype='int16')
+#         seqlen = end - start
+#         size = seqlen - kmer_len
+#
+#         # this should be a terminal argument
+#         max_iters = 2
+#         corrections_counter = 0
+#
+#         # we try to transfer the reads assigned for this thread into its private memory for memory access issues
+#         for idx in range(0, seqlen):
+#             local_reads[idx] = reads[idx + start]
+#
+#         for i in range(0, 4):
+#             bases[i] = i + 1
+#
+#         for _ in range(0, max_iters):
+#             num_corrections = correct_two_sided(
+#                 seqlen,
+#                 kmer_spectrum,
+#                 km,
+#                 aux_kmer,
+#                 kmer_len,
+#                 bases,
+#                 solids,
+#                 local_reads,
+#                 lpossible_base_mutations,
+#                 rpossible_base_mutations,
+#                 size,
+#                 rep,
+#                 aux_km2,
+#                 encoded_bases,
+#
+#             )
+#             # this read is error free. Stop correction
+#             # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
+#             # returning, we have to copy it back into global memory stored reads
+#             if num_corrections == 0:
+#                 copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
+#                 for idx in range(0, seqlen):
+#                     reads[idx + start] = local_reads[idx]
+#
+#                 corrections_flag[threadIdx] = 0
+#                 return
+#
+#             # this read has more one than error within a kmer. Pass the read to one sided correction
+#             if num_corrections == -1:
+#                 corrections_counter = -1
+#                 break
+#
+#             corrected_tracker[threadIdx] = 1
+#             corrections_counter = 1
+#         # endfor max_iters
+#         copy_kmer(dev_solids[threadIdx], solids, 0, seqlen)
+#         corrections_flag[threadIdx] = corrections_counter
+#
+#         # bring local read back to global memory reads
+#
+#         for idx in range(0, seqlen):
+#             reads[idx + start] = local_reads[idx]
+#         cuda.syncthreads()
+#         return
+#
 @cuda.jit(device=True)
 def correct_two_sided(
     seqlen,
@@ -216,8 +217,11 @@ def correct_two_sided(
     rep,
     aux_km2,
     encoded_bases,
-    corrections
 ):
+     # clear solids
+    for i in range(0, seqlen):
+        solids[i] = -1
+
     # encode "5" base into "1" base
     copy_kmer(encoded_bases, local_read, 0, seqlen)
     encode_bases(encoded_bases, seqlen)
@@ -231,16 +235,19 @@ def correct_two_sided(
 
     # for bases index 0 until size
     klen_idx = kmer_len - 1
-    corrections_count = 0
     for ipos in range(0, size + 1):
+        # if ipos < kmer_len:
+        #     continue
         lpos = 0
         #right kmer
-        copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
+        if ipos >= 0:
+            copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
 
         #left kmer
         if ipos >= kmer_len:
             copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
             lpos = klen_idx
+
         else:
             copy_kmer(aux_kmer, encoded_bases, 0, kmer_len)
             lpos = ipos
@@ -307,13 +314,10 @@ def correct_two_sided(
             i += 1
         # apply correction to the current base and return from this function
         if num_corrections == 1 and potential_base > 0:
-            corrections[corrections_count][0] = potential_base
-            corrections[corrections_count][1] = ipos
-            corrections_count += 1
+            local_read[ipos] = potential_base
             return 1
 
     # endfor  0 < seqlen - klen
-
     # for bases > seqlen - klen)
 
     for ipos in range(size + 1, seqlen):
@@ -383,8 +387,7 @@ def correct_two_sided(
             i += 1
         # apply correction to the current base and return from this function
         if num_corrections == 1 and potential_base > 0:
-            corrections[corrections_count][0] = potential_base
-            corrections[corrections_count][1] = ipos
+            local_read[ipos] = potential_base
             return 1
 
     return -1
@@ -423,7 +426,7 @@ def one_sided_kernel(
         aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
         encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
-        two_sided_corrections = cuda.local.array((4, 2), dtype='uint8')
+
         maxIters = 4
         min_vote = 3
         seqlen = end - start
@@ -438,9 +441,6 @@ def one_sided_kernel(
             local_read[idx] = reads[start + idx]
 
         for _ in range(0, 2):
-            # clear solids
-            for i in range(0, seqlen):
-                solids[i] = -1
 
             num_corrections = correct_two_sided(
                 seqlen,
@@ -457,103 +457,94 @@ def one_sided_kernel(
                 rep,
                 aux_km2,
                 encoded_bases,
-                two_sided_corrections
             )
             # this read is error free. Stop correction
             # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
             # returning, we have to copy it back into global memory stored reads
             if num_corrections == 0:
-                for idx in range(0, seqlen):
-                    dev_reads_result[threadIdx][idx] = local_read[idx]
-                return
+                break
 
             # this read has more one than error within a kmer. Pass the read to one sided correction
             if num_corrections == -1:
                 break
+        # endfor two_sided
 
-            local_read[two_sided_corrections[0][1]] = two_sided_corrections[0][0]
-        # endfor max_iters
-        # for nerr in range(1, maxIters + 1):
-        #
-        #     distance = maxIters - nerr + 1
-        #     for _ in range(2):
-        #
-        #         # reset solids and aux_corrections every before run of onesided
-        #         for idx in range(seqlen):
-        #             solids[idx] = -1
-        #             aux_corrections[idx] = 0
-        #             local_read_aux[idx] = local_read[idx]
-        #
-        #         corrections_made = one_sided_v2(
-        #             local_read,
-        #             aux_corrections,
-        #             km,
-        #             aux_km,
-        #             region_indices,
-        #             selected_bases,
-        #             kmer_len,
-        #             seqlen,
-        #             kmer_spectrum,
-        #             solids,
-        #             bases,
-        #             nerr,
-        #             distance,
-        #             local_read_aux,
-        #             rep,
-        #             aux_km2,
-        #             encoded_bases,
-        #         )
-        #
-        #         # returns -1 means all bases are solid
-        #         if corrections_made == -1:
-        #             for idx in range(0, seqlen):
-        #                 reads[start + idx] = local_read[idx]
-        #             return
-        #
-        #         # no corrections made
-        #         if corrections_made == 0:
-        #             break
-        #
-        #         # a correction has been recorded and put the corrections in local read
-        #         elif corrections_made > 0:
-        #             for i in range(seqlen):
-        #                 if aux_corrections[i] > 0 and aux_corrections[i] < 5:
-        #                     local_read[i] = aux_corrections[i]
-        #
-        #     # start voting refinement here
-        #     copy_kmer(encoded_bases, local_read, 0, seqlen)
-        #     encode_bases(encoded_bases, seqlen)
-        #     max_vote = cast_votes(
-        #         encoded_bases,
-        #         voting_matrix,
-        #         seqlen,
-        #         kmer_len,
-        #         bases,
-        #         seqlen - kmer_len,
-        #         kmer_spectrum,
-        #         km,
-        #         rep,
-        #         aux_km,
-        #         aux_km2,
-        #     )
-        #
-        #     max_votes[threadIdx][nerr - 1] = max_vote
-        #
-        #     # the read is error free at this point
-        #     if max_vote == 0:
-        #         break
-        #     elif max_vote >= min_vote:
-        #         apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
-        # # endfor idx to max_corrections
-        #
-        # # copies back corrected local read into global memory stored reads
-        # seed_ones(local_read, seqlen)
+        for nerr in range(1, maxIters + 1):
 
-        # for idx in range(0, seqlen):
-        #     reads[start + idx] = local_read[idx]
+            #to be fixed
+            # distance = maxIters - nerr + 1
+            # for _ in range(2):
+            #
+            #     # reset solids and aux_corrections every before run of onesided
+            #     for idx in range(seqlen):
+            #         solids[idx] = -1
+            #         aux_corrections[idx] = 0
+            #         local_read_aux[idx] = local_read[idx]
+            #
+            #     corrections_made = one_sided_v2(
+            #         local_read,
+            #         aux_corrections,
+            #         km,
+            #         aux_km,
+            #         region_indices,
+            #         selected_bases,
+            #         kmer_len,
+            #         seqlen,
+            #         kmer_spectrum,
+            #         solids,
+            #         bases,
+            #         nerr,
+            #         distance,
+            #         local_read_aux,
+            #         rep,
+            #         aux_km2,
+            #         encoded_bases,
+            #     )
+            #
+            #     # returns -1 means all bases are solid
+            #     if corrections_made == -1:
+            #         for idx in range(0, seqlen):
+            #             dev_reads_result[threadIdx][idx] = local_read[idx]
+            #         return
+            #
+            #     # no corrections made
+            #     if corrections_made == 0:
+            #         break
+            #
+            #     # a correction has been recorded and put the corrections in local read
+            #     elif corrections_made > 0:
+            #         for i in range(seqlen):
+            #             if aux_corrections[i] > 0 and aux_corrections[i] < 5:
+            #                 local_read[i] = aux_corrections[i]
+
+            # start voting refinement here
+            copy_kmer(encoded_bases, local_read, 0, seqlen)
+            encode_bases(encoded_bases, seqlen)
+            max_vote = cast_votes(
+                encoded_bases,
+                voting_matrix,
+                seqlen,
+                kmer_len,
+                bases,
+                seqlen - kmer_len,
+                kmer_spectrum,
+                km,
+                rep,
+                aux_km,
+                aux_km2,
+            )
+
+            max_votes[threadIdx][nerr - 1] = max_vote
+
+            # the read is error free at this point
+            if max_vote == 0:
+                break
+            elif max_vote >= min_vote:
+                apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
+
         for idx in range(0, seqlen):
             dev_reads_result[threadIdx][idx] = local_read[idx]
-        cuda.syncthreads()
+        # cuda.syncthreads()
 
 # for orientation going to the right of the read
 @cuda.jit(device=True)
