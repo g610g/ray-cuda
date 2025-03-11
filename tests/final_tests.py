@@ -1,4 +1,3 @@
-from math import e
 import unittest
 import numpy as np
 from numpy import random
@@ -19,31 +18,7 @@ from voting_module import cast_votes, apply_voting_result
 
 
 class OneSidedTests(unittest.TestCase):
-    def test_backward_base(self):
-        kmer_length = 13
-        local_read = [1, 4, 2, 1, 2, 4, 2, 1, 3, 4, 2, 1, 2, 3, 4, 3, 2, 1]
-        aux_kmer = np.zeros(kmer_length, dtype="uint8")
-        copy_kmer(aux_kmer, local_read, 3, 3 + kmer_length)
-        backward_base(aux_kmer, local_read[2], kmer_length)
-        print(aux_kmer, local_read[2 : 2 + kmer_length])
-        assert_array_equal(local_read[2 : 2 + kmer_length], aux_kmer)
 
-    # def test_forward_base(self):
-    #     local_read = np.array([4, 4, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2, 1, 3, 2, 1], dtype='uint8')
-    #     kmer_length = 13
-    #     aux_kmer = np.zeros(kmer_length, dtype='uint8')
-    #     copy_kmer(aux_kmer, local_read, 0, 13)
-    #     forward_base(aux_kmer, local_read[13], kmer_length)
-    #     assert_array_equal(aux_kmer, local_read[1: 14])
-    # def test_backward_base(self):
-    #     local_read = np.array([4, 4, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2, 1, 3, 2, 1], dtype='uint8')
-    #     kmer_length = 13
-    #     aux_kmer = np.zeros(kmer_length, dtype='uint8')
-    #     copy_kmer(aux_kmer, local_read, 1, 14)
-    #     backward_base(aux_kmer, 1, kmer_length)
-    #     answer = local_read[0: 13]
-    #     answer[0] = 1
-    #     assert_array_equal(aux_kmer, answer)
     def test_region_identification(self):
 
         local_read = np.array(
@@ -95,8 +70,8 @@ class OneSidedTests(unittest.TestCase):
         generate_kmers(local_read, kmer_len, spectrum)
         spectrum = count_occurence(spectrum)
         local_read[0] = 2
-        # local_read[35] = 4
-        # local_read[34] = 4
+        local_read[12] = 4
+        local_read[24] = 1
         # local_read[22] = 4
         # local_read[5] = 1
         # local_read[8] = 3

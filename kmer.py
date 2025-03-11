@@ -98,31 +98,27 @@ class KmerExtractorGPU:
             exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
             numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
             result_frame = numeric_ngrams.value_counts().reset_index()
-            all_results.append(result_frame)
+            [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(result_frame)
+            all_results.append(kmers_np)
+        combined_results = np.concatenate(all_results)
+        print(combined_results.shape)
 
         final_result = (
-            cudf.concat(all_results, ignore_index=True)
-            .groupby("translated")
-            .sum()
-            .reset_index()
-        )
-        print(final_result)
-        final_result.columns = ["translated", "multiplicity"]
-        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        print(f"final result shape is: {final_result.shape}")
-        print(f"Kmers before calculating canonical kmers: {final_result}")
-        [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(final_result)
-
-        final_kmers = (
             cudf.DataFrame(
-                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+                {
+                    "canonical": combined_results[:, 0],
+                    "multiplicity": combined_results[:, 1],
+                }
             )
             .groupby("canonical")
             .sum()
             .reset_index()
         )
-        print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers
+        print(final_result)
+        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        print(f"final result shape is: {final_result.shape}")
+        print(f"Kmers after calculating canonical kmers: {final_result}")
+        return final_result
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
     def calculate_kmers_multiplicity(self, reads, batch_size):
@@ -146,7 +142,7 @@ class KmerExtractorGPU:
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"Kmers before calculating canonical kmers: {result_frame}")
         # we do this by batch
-        [kmers_np, _]= self.check_rev_comp_kmer(result_frame)
+        [kmers_np, _] = self.check_rev_comp_kmer(result_frame)
         final_kmers = (
             cudf.DataFrame(
                 {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}

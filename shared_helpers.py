@@ -48,6 +48,51 @@ def identify_solid_bases(encoded_base, kmer_len, kmer_spectrum, solids, km, size
 
 
 @cuda.jit(device=True)
+def identify_trusted_regions_v2(
+    local_read, km, rep, kmer_len, spectrum, seq_len, size, solids, regions
+):
+    left_kmer, right_kmer = -1, -1
+    solid_region = False
+    regions_count = 0
+
+    for pos in range(seq_len):
+        solids[pos] = -1
+
+    for ipos in range(0, size + 1):
+        copy_kmer(km, local_read, ipos, ipos + kmer_len)
+        copy_kmer(rep, local_read, ipos, ipos + kmer_len)
+        reverse_comp(rep, kmer_len)
+        if lower(rep, km, kmer_len):
+            copy_kmer(rep, km, 0, kmer_len)
+
+        kmer = transform_to_key(rep, kmer_len)
+
+        if in_spectrum(spectrum, kmer):
+            if not solid_region:
+                solid_region = True
+                left_kmer = ipos
+                right_kmer = ipos
+            else:
+                right_kmer += 1
+
+            for idx in range(ipos, ipos + kmer_len):
+                solids[idx] = 1
+        else:
+            if left_kmer >= 0:
+                regions[regions_count][0] = left_kmer
+                regions[regions_count][1] = right_kmer
+                regions_count += 1
+                left_kmer = right_kmer = -1
+            solid_region = False
+
+    if solid_region and left_kmer >= 0:
+        regions[regions_count][0] = left_kmer
+        regions[regions_count][1] = right_kmer
+        regions_count += 1
+    return regions_count
+
+
+@cuda.jit(device=True)
 def identify_trusted_regions(
     seq_len,
     kmer_spectrum,
@@ -151,6 +196,7 @@ def back_sequence_kernel(reads, offsets, reads_result):
         # for idx in range(seqlen):
         #     reads_result[threadIdx][idx] = local_reads[idx]
         #
+
 
 # normal python function for giving insights by differentiating before and after solids
 def differ_solids(solids_before, solids_after):
@@ -347,7 +393,7 @@ def copy_kmer(aux_kmer, local_read, start, end):
         aux_kmer[i - start] = local_read[i]
 
 
-#find base mutations for a kmer
+# find base mutations for a kmer
 @cuda.jit(device=True)
 def select_mutations(
     spectrum, bases, km, kmer_len, pos, selected_bases, rev_comp, aux_km, aux_km2
@@ -392,6 +438,7 @@ def select_mutations(
                     num_bases += 1
 
     return num_bases
+
 
 # backward the base or shifts bases to the left
 @cuda.jit(device=True)
@@ -447,6 +494,7 @@ def complement(base):
     # else:
     #     return 5
     return 5
+
 
 @cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):

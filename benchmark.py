@@ -74,9 +74,13 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
 # ecoli_70x_3perc_single_uncorrected_sorted.bam
 # work-please_aligned_sorted.bam
 # please_aligned_sorted.bam
-reference = "genetic-assets/final_data/ecoli_datasets/GCF_000005845.2_ASM584v2_genomic.fna"
-original = "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_3perc_aligned_sorted.bam"
-corrected = "genetic-assets/final_data/ecoli_datasets/please_aligned_sorted.bam"
+reference = (
+    "genetic-assets/final_data/ecoli_datasets/GCF_000005845.2_ASM584v2_genomic.fna"
+)
+original = (
+    "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2perc_aligned_sorted.bam"
+)
+corrected = "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2perc_musket_aligned_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)

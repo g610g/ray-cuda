@@ -107,6 +107,9 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
     dev_reads_2d = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="uint8"))
+    grid_shape = cuda.to_device(np.zeros(1, dtype="uint64"))
+    dev_solids = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int8"))
+    dev_solids_before = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int8"))
     # allocating gpu threads
     tpb = 256
     bpg = (offsets.shape[0] + tpb) // tpb
@@ -120,15 +123,21 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
         kmer_len,
         max_votes,
         dev_reads_2d,
+        dev_solids,
+        dev_solids_before,
     )
 
     end.record()
     end.synchronize()
     transfer_time = cuda.event_elapsed_time(start, end)
     print(f"execution time of the kernel:  {transfer_time} ms")
-
+    print(grid_shape.copy_to_host())
     cuda.profile_stop()
-    return dev_reads_2d.copy_to_host()
+    return (
+        dev_reads_2d.copy_to_host(),
+        dev_solids.copy_to_host(),
+        dev_solids_before.copy_to_host(),
+    )
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -217,9 +226,15 @@ class GPUPing:
 def ping_resources():
     print(ray.cluster_resources())
 
+
 @cuda.jit()
-def kernel_test(dev_arr):
+def kernel_test(dev_arr, int_arr):
     threadIdx = cuda.grid(1)
+    local_int_arr = cuda.local.array(100, dtype="int32")
+    for i in range(100):
+        local_int_arr[i] = -1
+        int_arr[threadIdx][i] = local_int_arr[i]
+
     odd = True
     arr = dev_arr[threadIdx]
     for i in range(len(arr)):
@@ -230,17 +245,22 @@ def kernel_test(dev_arr):
         else:
             dev_arr[threadIdx][i] = 2
         odd = True
+
+
 @ray.remote(num_gpus=1)
 def test():
-    arr = np.zeros((100, 100), dtype='int64')
+    arr = np.zeros((100, 100), dtype="int64")
+    int_arr = cuda.to_device(np.zeros((100, 100), dtype="int32"))
     dev_arr = cuda.to_device(arr)
     tpb = len(arr)
     bpg = (len(arr) + tpb) // tpb
-    kernel_test[bpg, tpb](dev_arr)
+    kernel_test[bpg, tpb](dev_arr, int_arr)
+    print(int_arr.copy_to_host())
     return dev_arr.copy_to_host()
 
+
 if __name__ == "__main__":
-    print(ray.get(test.remote()))
+    # print(ray.get(test.remote()))
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file>"
     if len(sys.argv) != 2:
@@ -326,7 +346,7 @@ if __name__ == "__main__":
     correction_result = []
     last_end_idx = 0
 
-    corrected_reads_array = ray.get(
+    corrected_reads_array, solids, solids_before = ray.get(
         remote_core_correction.remote(
             sorted_kmer_np_reference, reads_1d, offsets, kmer_len, last_end_idx
         )
@@ -353,31 +373,29 @@ if __name__ == "__main__":
     #     last_end_idx = last_idx
     #     correction_result.append(corrected_reads_array)
     # corrected_reads_array = np.concatenate(correction_result, dtype="uint8")
-
+    print("solids before correction")
+    ray.get(
+        [
+            check_solids.remote(solids_before[idx : idx + batch_size], 100)
+            for idx in range(0, len(solids_before), batch_size)
+        ]
+    )
+    print("solids after correction")
+    ray.get(
+        [
+            check_solids.remote(solids[idx : idx + batch_size], 100)
+            for idx in range(0, len(solids), batch_size)
+        ]
+    )
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
         back_to_sequence_helper.remote(corrected_reads_array, offsets)
     )
-    # ray.get(
-    #     [
-    #         bench_corrections.remote(
-    #             corrected_2d_reads_array[idx : idx + batch_size], 100
-    #         )
-    #         for idx in range(0, len(corrected_2d_reads_array), batch_size)
-    #     ]
-    # )
-    # ray.get(
-    #     [
-    #         check_solids.remote(
-    #             solids[idx : idx + batch_size], 100
-    #         )
-    #         for idx in range(0, len(solids), batch_size)
-    #     ]
-    # )
+
     # ray.get(
     #     [
     #         check_has_corrected.remote(
-    #             corrected_tracker[idx : idx + batch_size] 
+    #             corrected_tracker[idx : idx + batch_size]
     #         )
     #         for idx in range(0, len(corrected_tracker), batch_size)
     #     ]
@@ -390,8 +408,14 @@ if __name__ == "__main__":
     write_file_starttime = time.perf_counter()
     print(corrected_2d_reads_array)
     print(len(corrected_2d_reads_array))
+
+    filename = get_filename_without_extension(sys.argv[1])
+    output_filename = filename + "GPUMUSKET.fastq"
+    print(output_filename)
     fastq_data_list = fastq_parser.write_fastq_file(
-        "genetic-assets/final_data/ecoli_datasets/please.fastq", sys.argv[1], corrected_2d_reads_array
+        output_filename,
+        sys.argv[1],
+        corrected_2d_reads_array,
     )
 
     write_file_endtime = time.perf_counter()

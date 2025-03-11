@@ -1,7 +1,18 @@
 from helpers import to_array_kmer, transform_to_key
 import ray
+import os
 from numba import cuda
 from shared_helpers import copy_kmer, lower, reverse_comp
+
+
+def get_filename_without_extension(file_path) -> str:
+    if file_path.endswith((".fastq")):
+        return file_path.split(".fastq")[0]
+    elif file_path.endswith((".fq")):
+        return file_path.split(".fq")[0]
+
+    # NOTE:: fix this here
+    return ""
 
 
 @ray.remote(num_cpus=1)
@@ -90,6 +101,8 @@ def bench_corrections(corrections, seqlen):
         if counts == seqlen:
             ones += 1
     print(f"{ones} reads that all elements are one out of {len(corrections)} reads")
+
+
 @ray.remote(num_cpus=1)
 def check_solids(solids, seqlen):
     ones = 0
@@ -101,10 +114,14 @@ def check_solids(solids, seqlen):
         if count == seqlen:
             ones += 1
     print(f"{ones} solid reads out of  {solids.shape[0]} reads")
+
+
 @ray.remote(num_cpus=1)
 def check_has_corrected(corrected):
     corrected_count = 0
     for correction in corrected:
         if correction == 1:
             corrected_count += 1
-    print(f"{corrected_count} number of reads that has been corrected out of  {len(corrected)} reads")
+    print(
+        f"{corrected_count} number of reads that has been corrected out of  {len(corrected)} reads"
+    )

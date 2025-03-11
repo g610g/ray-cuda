@@ -15,13 +15,14 @@ from test_modules import (
     transform_to_key_host
 )
 
-def identify_trusted_regions_v2(local_read,ascii_kmer,  kmer_len, spectrum, seq_len, size):
+def identify_trusted_regions_v2(local_read, ascii_kmer,  kmer_len, spectrum, seq_len, size):
     MAX_LEN = 300
     left_kmer, right_kmer = -1, -1 
     solid_region = False
     solids = np.zeros(MAX_LEN, dtype='int8')
     regions = np.zeros((10, 2), dtype='int16')
     regions_count = 0
+
     for pos in range(seq_len):
         solids[pos] = -1
 
@@ -34,6 +35,7 @@ def identify_trusted_regions_v2(local_read,ascii_kmer,  kmer_len, spectrum, seq_
                 left_kmer = right_kmer = ipos
             else:
                 right_kmer += 1
+
             print(f"Marking in index {ipos} to {ipos + (kmer_len - 1)}")
             for idx in range(ipos, ipos + kmer_len):
                 solids[idx] = 1
@@ -43,6 +45,7 @@ def identify_trusted_regions_v2(local_read,ascii_kmer,  kmer_len, spectrum, seq_
                 regions_count += 1
                 left_kmer = right_kmer = -1
             solid_region = False
+
     if solid_region and left_kmer >= 0:
         regions[regions_count][0], regions[regions_count][1] = left_kmer, right_kmer
         regions_count += 1
