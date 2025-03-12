@@ -1,3 +1,4 @@
+from typing import final
 from unittest import result
 import ray
 import math
@@ -100,29 +101,31 @@ class KmerExtractorGPU:
             result_frame = numeric_ngrams.value_counts().reset_index()
             all_results.append(result_frame)
 
-        final_result = (
+        concat_result = (
             cudf.concat(all_results, ignore_index=True)
             .groupby("translated")
             .sum()
             .reset_index()
         )
-        print(final_result)
-        final_result.columns = ["translated", "multiplicity"]
+        print(concat_result)
+        concat_result.columns = ["translated", "multiplicity"]
+        concat_result["multiplicity"] = concat_result["multiplicity"].clip(upper=255)
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        print(f"final result shape is: {final_result.shape}")
-        print(f"Kmers before calculating canonical kmers: {final_result}")
-        [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(final_result)
+        print(f"final result shape is: {concat_result.shape}")
+        print(f"Kmers before calculating canonical kmers: {concat_result}")
+        # [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(concat_result)
 
-        final_kmers = (
-            cudf.DataFrame(
-                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
-            )
-            .groupby("canonical")
-            .sum()
-            .reset_index()
-        )
-        print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers
+        # final_kmers = (
+        #     cudf.DataFrame(
+        #         {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+        #     )
+        #     .groupby("canonical")
+        #     .sum()
+        #     .reset_index()
+        # )
+        # final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
+        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return concat_result
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
     def calculate_kmers_multiplicity(self, reads, batch_size):
@@ -146,7 +149,8 @@ class KmerExtractorGPU:
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"Kmers before calculating canonical kmers: {result_frame}")
         # we do this by batch
-        [kmers_np, _]= self.check_rev_comp_kmer(result_frame)
+        [kmers_np, _] = self.check_rev_comp_kmer(result_frame)
+
         final_kmers = (
             cudf.DataFrame(
                 {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
@@ -155,6 +159,7 @@ class KmerExtractorGPU:
             .sum()
             .reset_index()
         )
+        final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
         print(f"Kmers after calculating canonical kmers: {final_kmers}")
         return final_kmers
 
@@ -164,10 +169,10 @@ def calculatecutoff_threshold(occurence_data, bin):
 
     hist_vals, bin_edges = np.histogram(occurence_data, bins=int(bin))
 
-    # print((hist_vals[:30]))
+    print((hist_vals[:]))
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-    # print(bin_centers[:30])
+    print(bin_centers[:])
 
     valley_index = 0
 

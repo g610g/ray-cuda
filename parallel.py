@@ -7,7 +7,6 @@ import fastq_parser
 import ray
 from Bio import Seq
 from shared_core_correction import *
-from numba import cuda
 from shared_helpers import (
     to_local_reads,
     back_to_sequence_helper,
@@ -17,6 +16,8 @@ from kmer import *
 from utility_helpers.utilities import *
 
 ray.init(dashboard_host="0.0.0.0")
+# os.environ["NUMBA_ENABLE_CUDASIM"] = "1"
+from numba import cuda
 
 
 # start is the starting kmer point
@@ -92,12 +93,14 @@ def test_cuda_array_context():
 
 
 @ray.remote(num_gpus=1, num_cpus=2)
-def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_idx):
+def remote_core_correction(
+    kmer_spectrum, reads_1d, offsets, kmer_len, last_end_idx, batch_size
+):
     cuda.profile_start()
     start = cuda.event()
     end = cuda.event()
     start.record()
-    print(f"offset shape: {offsets.shape[0]}")
+    print(f"offset shape: {offsets.shape}")
     print(f"offset dtype: {offsets.dtype}")
     print(f"reads dtype: {reads_1d.dtype}")
     print(f"Kmer spectrum: {kmer_spectrum}")
@@ -107,12 +110,18 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
     dev_reads_2d = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="uint8"))
+    solids = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int8"))
     # allocating gpu threads
-    tpb = 256
-    bpg = (offsets.shape[0] + tpb) // tpb
     # bpg = math.ceil(offsets.shape[0] // tpb)
 
-    # voting refinement is done within the one_sided_kernel
+    # for batchIdx in range(0, offsets.shape[0], batch_size):
+    #     # voting refinement is done within the one_sided_kernel
+    #     print(f"current batch idx {batchIdx}")
+    #     offsets_slice = offsets[batchIdx : batchIdx + batch_size]
+    #     print(f"offset slice shape: {offsets_slice.shape[0]}")
+    tpb = 256
+    bpg = (offsets.shape[0] + tpb) // tpb
+
     one_sided_kernel[bpg, tpb](
         dev_kmer_spectrum,
         dev_reads_1d,
@@ -120,6 +129,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
         kmer_len,
         max_votes,
         dev_reads_2d,
+        solids,
     )
 
     end.record()
@@ -128,7 +138,7 @@ def remote_core_correction(kmer_spectrum, reads_1d, offsets, kmer_len, last_end_
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return dev_reads_2d.copy_to_host()
+    return dev_reads_2d.copy_to_host(), solids.copy_to_host()
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -217,6 +227,7 @@ class GPUPing:
 def ping_resources():
     print(ray.cluster_resources())
 
+
 @cuda.jit()
 def kernel_test(dev_arr):
     threadIdx = cuda.grid(1)
@@ -230,14 +241,17 @@ def kernel_test(dev_arr):
         else:
             dev_arr[threadIdx][i] = 2
         odd = True
+
+
 @ray.remote(num_gpus=1)
 def test():
-    arr = np.zeros((100, 100), dtype='int64')
+    arr = np.zeros((100, 100), dtype="int64")
     dev_arr = cuda.to_device(arr)
     tpb = len(arr)
     bpg = (len(arr) + tpb) // tpb
     kernel_test[bpg, tpb](dev_arr)
     return dev_arr.copy_to_host()
+
 
 if __name__ == "__main__":
     print(ray.get(test.remote()))
@@ -295,11 +309,13 @@ if __name__ == "__main__":
     print(f"max occurence data: {max_occurence}")
 
     print(f"Non unique kmers {non_unique_kmers}")
-    cutoff_threshold = calculatecutoff_threshold(occurence_data, max_occurence // 2)
+    cutoff_threshold = calculatecutoff_threshold(
+        occurence_data, math.ceil(max_occurence / 2)
+    )
+    # cutoff_threshold = 79
     print(f"cutoff threshold: {cutoff_threshold}")
 
     batch_size = len(offsets) // cpus_detected
-
     filtered_kmer_df = non_unique_kmers[
         non_unique_kmers["multiplicity"] >= cutoff_threshold
     ]
@@ -326,9 +342,9 @@ if __name__ == "__main__":
     correction_result = []
     last_end_idx = 0
 
-    corrected_reads_array = ray.get(
+    corrected_reads_array, solids_host = ray.get(
         remote_core_correction.remote(
-            sorted_kmer_np_reference, reads_1d, offsets, kmer_len, last_end_idx
+            sorted_kmer_np_reference, reads_1d, offsets, kmer_len, last_end_idx, 1000000
         )
     )
     print(corrected_reads_array)
@@ -366,18 +382,22 @@ if __name__ == "__main__":
     #         for idx in range(0, len(corrected_2d_reads_array), batch_size)
     #     ]
     # )
-    # ray.get(
-    #     [
-    #         check_solids.remote(
-    #             solids[idx : idx + batch_size], 100
-    #         )
-    #         for idx in range(0, len(solids), batch_size)
-    #     ]
-    # )
+    ray.get(
+        [
+            check_solids.remote(solids_host[idx : idx + batch_size], 100)
+            for idx in range(0, len(solids_host), batch_size)
+        ]
+    )
+    ray.get(
+        [
+            check_uncorrected.remote(solids_host[idx : idx + batch_size])
+            for idx in range(0, len(solids_host), batch_size)
+        ]
+    )
     # ray.get(
     #     [
     #         check_has_corrected.remote(
-    #             corrected_tracker[idx : idx + batch_size] 
+    #             corrected_tracker[idx : idx + batch_size]
     #         )
     #         for idx in range(0, len(corrected_tracker), batch_size)
     #     ]
@@ -390,8 +410,12 @@ if __name__ == "__main__":
     write_file_starttime = time.perf_counter()
     print(corrected_2d_reads_array)
     print(len(corrected_2d_reads_array))
+
+    filename = get_filename_without_extension(sys.argv[1])
+    output_filename = filename + "GPUMUSKET.fastq"
+    print(output_filename)
     fastq_data_list = fastq_parser.write_fastq_file(
-        "genetic-assets/final_data/ecoli_datasets/please.fastq", sys.argv[1], corrected_2d_reads_array
+        output_filename, sys.argv[1], corrected_2d_reads_array
     )
 
     write_file_endtime = time.perf_counter()

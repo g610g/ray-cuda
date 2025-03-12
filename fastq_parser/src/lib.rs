@@ -106,7 +106,7 @@ pub mod functionalities {
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
-    m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
+    //m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
@@ -181,63 +181,63 @@ fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str>
     }
 }
 
-#[pyfunction]
-fn parse_fastq_file_parallel<'py>(
-    py: Python<'py>,
-    file_path: String,
-    kmer_length: usize,
-) -> Bound<'py, PyArray2<u8>> {
-    let reader = match fastq::Reader::from_file(file_path) {
-        Ok(reader) => reader,
-        Err(_) => panic!("error in reading file"),
-    };
-
-    let bloom: SyncBloom<String> = SyncBloom::new(1_000_000);
-    let mut hash_map: HashMap<String, u32> = HashMap::new();
-
-    let records_list: Vec<Result<Record, _>> = reader.records().collect();
-
-    let string_reads: Vec<&[u8]> = records_list
-        .into_par_iter()
-        .map(|record| {
-            let record = match record {
-                Ok(record) => record,
-                Err(_) => panic!("invalid record"),
-            };
-
-            record.seq()
-            //let string_read = str::from_utf8(record.seq()).unwrap();
-            //string_read.to_string()
-        })
-        .collect();
-    let utf_reads: Vec<Vec<u8>> = string_reads
-        .par_iter()
-        .map(|read| {
-            //convert chars into utf-u8 format
-            read.chars().map(|char| char as u8).collect()
-        })
-        .collect();
-    let kmers: Vec<Vec<String>> = string_reads
-        .par_iter()
-        .map(|read_string| {
-            let kmers: Vec<String> = read_string
-                .chars()
-                .collect::<Vec<char>>()
-                .windows(kmer_length)
-                .map(|x| x.iter().collect::<String>())
-                .collect();
-
-            kmers.iter().for_each(|kmer| {
-                //use bloom filter and check whether it exists
-            });
-            return kmers;
-        })
-        .collect();
-    let flatten: Vec<u8> = utf_reads.into_par_iter().flatten().collect();
-    Array2::from_shape_vec((string_reads.len(), 100), flatten)
-        .unwrap()
-        .into_pyarray(py)
-}
+//#[pyfunction]
+//fn parse_fastq_file_parallel<'py>(
+//    py: Python<'py>,
+//    file_path: String,
+//    kmer_length: usize,
+//) -> Bound<'py, PyArray2<u8>> {
+//    let reader = match fastq::Reader::from_file(file_path) {
+//        Ok(reader) => reader,
+//        Err(_) => panic!("error in reading file"),
+//    };
+//
+//    let bloom: SyncBloom<String> = SyncBloom::new(1_000_000);
+//    let mut hash_map: HashMap<String, u32> = HashMap::new();
+//
+//    let records_list: Vec<Result<Record, _>> = reader.records().collect();
+//
+//    let string_reads: Vec<&[u8]> = records_list
+//        .into_par_iter()
+//        .map(|record| {
+//            let record = match record {
+//                Ok(record) => record,
+//                Err(_) => panic!("invalid record"),
+//            };
+//
+//            record.seq()
+//            //let string_read = str::from_utf8(record.seq()).unwrap();
+//            //string_read.to_string()
+//        })
+//        .collect();
+//    let utf_reads: Vec<Vec<u8>> = string_reads
+//        .par_iter()
+//        .map(|read| {
+//            //convert chars into utf-u8 format
+//            read.chars().map(|char| char as u8).collect()
+//        })
+//        .collect();
+//    let kmers: Vec<Vec<String>> = string_reads
+//        .par_iter()
+//        .map(|read_string| {
+//            let kmers: Vec<String> = read_string
+//                .chars()
+//                .collect::<Vec<char>>()
+//                .windows(kmer_length)
+//                .map(|x| x.iter().collect::<String>())
+//                .collect();
+//
+//            kmers.iter().for_each(|kmer| {
+//                //use bloom filter and check whether it exists
+//            });
+//            return kmers;
+//        })
+//        .collect();
+//    let flatten: Vec<u8> = utf_reads.into_par_iter().flatten().collect();
+//    Array2::from_shape_vec((string_reads.len(), 100), flatten)
+//        .unwrap()
+//        .into_pyarray(py)
+//}
 //creates python bindings that will be used for parsing fastq files
 #[pyfunction]
 fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
@@ -246,15 +246,15 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
         Err(_) => Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
     }
 }
-#[pyfunction]
-fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
-    let mut reader = fastq::Reader::from_file(file_path).unwrap();
-    let records = match reader.records() {
-        Ok(records) => records,
-        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
-    };
-    //let string_reads = records.
-}
+//#[pyfunction]
+//fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
+//    let mut reader = fastq::Reader::from_file(file_path).unwrap();
+//    let records = match reader.records() {
+//        Ok(records) => records,
+//        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
+//    };
+//    //let string_reads = records.
+//}
 #[pyfunction]
 fn write_fastq_file(
     dst_filename: String,

@@ -139,11 +139,11 @@ class OneSidedTests(unittest.TestCase):
     def test_backward_base(self):
         kmer_length = 13
         local_read = [1, 4, 2, 1, 2, 4, 2, 1, 3, 4, 2, 1, 2, 3, 4, 3, 2, 1]
-        aux_kmer = np.zeros(kmer_length, dtype='uint8')
+        aux_kmer = np.zeros(kmer_length, dtype="uint8")
         copy_kmer(aux_kmer, local_read, 3, 3 + kmer_length)
         backward_base(aux_kmer, local_read[2], kmer_length)
-        print(aux_kmer, local_read[2: 2 + kmer_length])
-        assert_array_equal(local_read[2: 2 + kmer_length], aux_kmer)
+        print(aux_kmer, local_read[2 : 2 + kmer_length])
+        assert_array_equal(local_read[2 : 2 + kmer_length], aux_kmer)
 
     # def test_forward_base(self):
     #     local_read = np.array([4, 4, 1, 2, 3, 1, 2, 4, 2, 1, 1, 2, 3, 2, 1, 3, 2, 1, 2, 3, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 2, 1, 3, 2, 1], dtype='uint8')
@@ -229,6 +229,50 @@ class OneSidedTests(unittest.TestCase):
         ascii_kmer = np.zeros(4, dtype="uint8")
         copy_kmer(ascii_kmer, local_read, 2, 6)
         print(ascii_kmer)
+
+    def test_reverse_complement(self):
+        local_read = [1, 2, 3, 4, 1, 2, 2, 1, 4, 1, 2, 2, 5, 5]
+        encoded_bases = np.zeros(len(local_read), dtype="uint8")
+        copy_kmer(encoded_bases, local_read, 0, len(local_read))
+        encode_bases(encoded_bases, len(local_read))
+        reverse_comp(encoded_bases, len(local_read))
+        print(encoded_bases)
+
+
+def encode_bases(bases, seqlen):
+    for idx in range(0, seqlen):
+        if bases[idx] == 5:
+            bases[idx] = 1
+
+
+def copy_kmer(aux_kmer, local_read, start, end):
+    for i in range(start, end):
+        aux_kmer[i - start] = local_read[i]
+
+
+def reverse_comp(reverse, kmer_len):
+    left = 0
+    right = kmer_len - 1
+    while left <= right:
+        comp_left = complement(reverse[left])
+        comp_right = complement(reverse[right])
+        reverse[left] = comp_right
+        reverse[right] = comp_left
+        right -= 1
+        left += 1
+
+
+def complement(base):
+    if base == 1:
+        return 4
+    elif base == 2:
+        return 3
+    elif base == 3:
+        return 2
+    elif base == 4:
+        return 1
+    else:
+        return 5
 
 
 def transform_to_key(ascii_kmer, len):
