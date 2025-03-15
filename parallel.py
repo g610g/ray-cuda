@@ -9,6 +9,7 @@ from Bio import Seq
 from shared_core_correction import *
 from shared_helpers import (
     sort_ping,
+    sort_pong,
     to_local_reads,
     back_to_sequence_helper,
 )
@@ -114,12 +115,6 @@ def remote_core_correction(
     solids = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int8"))
     # allocating gpu threads
     # bpg = math.ceil(offsets.shape[0] // tpb)
-
-    # for batchIdx in range(0, offsets.shape[0], batch_size):
-    #     # voting refinement is done within the one_sided_kernel
-    #     print(f"current batch idx {batchIdx}")
-    #     offsets_slice = offsets[batchIdx : batchIdx + batch_size]
-    #     print(f"offset slice shape: {offsets_slice.shape[0]}")
     tpb = 256
     bpg = (offsets.shape[0] + tpb) // tpb
 
@@ -236,23 +231,23 @@ def kernel_test(dev_arr):
         region_indices = cuda.local.array((10, 3), dtype='uint32')
         key = cuda.local.array(3, dtype='uint32')
          # Initialize the array elements individually
-        region_indices[0, 0] = 1
-        region_indices[0, 1] = 3
-        region_indices[0, 2] = 2
+        region_indices[3, 0] = 1
+        region_indices[3, 1] = 3
+        region_indices[3, 2] = 2
         
-        region_indices[1, 0] = 5
-        region_indices[1, 1] = 10
-        region_indices[1, 2] = 5
+        region_indices[2, 0] = 5
+        region_indices[2, 1] = 10
+        region_indices[2, 2] = 5
         
-        region_indices[2, 0] = 10
-        region_indices[2, 1] = 25
-        region_indices[2, 2] = 15
+        region_indices[1, 0] = 10
+        region_indices[1, 1] = 25
+        region_indices[1, 2] = 15
         
-        region_indices[3, 0] = 30
-        region_indices[3, 1] = 50
-        region_indices[3, 2] = 20
+        region_indices[0, 0] = 30
+        region_indices[0, 1] = 50
+        region_indices[0, 2] = 20
         regions_num = 4
-        sort_ping(region_indices, key, regions_num)
+        sort_pong(region_indices, key, regions_num)
         for i in range(regions_num):
             for j in range(3):
                 dev_arr[threadIdx][i][j] = region_indices[i][j]

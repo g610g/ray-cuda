@@ -12,6 +12,8 @@ from shared_helpers import (
     predeccessor_v2,
     reverse_comp,
     seed_ones,
+    sort_ping,
+    sort_pong,
     successor,
     successor_v2,
     copy_kmer,
@@ -413,7 +415,7 @@ def one_sided_kernel(
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         # start, end = initial_start - last_end_idx, initial_end - last_end_idx
         solids = cuda.local.array(MAX_LEN, dtype="int8")
-        region_indices = cuda.local.array((20, 2), dtype="int32")
+        region_indices = cuda.local.array((20, 3), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
         selected_bases = cuda.local.array((4, 2), dtype="uint16")
         lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint16")
@@ -427,7 +429,7 @@ def one_sided_kernel(
         aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
         encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
-
+        key = cuda.local.array(3, dtype='uint32')
         maxIters = 4
         min_vote = 3
         seqlen = end - start
@@ -476,16 +478,13 @@ def one_sided_kernel(
         for nerr in range(1, maxIters + 1):
             # TODO:: to be fixed
             distance = maxIters - nerr + 1
-            #TODO::create pingpong comp region
+            ping = False
             for _ in range(2):
-
+                ping = not ping
                 # reset solids and aux_corrections every before run of onesided
                 for idx in range(seqlen):
                     solids[idx] = -1
                     aux_corrections[idx] = 0
-                    local_read_aux[idx] = local_read[idx]
-
-
                 corrections_made = one_sided_v2(
                     local_read,
                     aux_corrections,
@@ -504,6 +503,8 @@ def one_sided_kernel(
                     rep,
                     aux_km2,
                     encoded_bases,
+                    key,
+                    ping
                 )
 
                 # returns -1 means all bases are solid
@@ -709,11 +710,13 @@ def one_sided_v2(
     rep,
     aux_km2,
     encoded_bases,
+    key,
+    ping,
 ):
 
-    done = False
     copy_kmer(encoded_bases, original_read, 0, seq_len)
     encode_bases(encoded_bases, seq_len)
+
     corrections_made = 0
     size = seq_len - kmer_len
 
@@ -730,7 +733,10 @@ def one_sided_v2(
     )
     if all_solid_base(solids, seq_len) or regions_count == 0:
         return -1
-
+    if ping:
+        sort_ping(region_indices, key, regions_count)
+    else:
+        sort_pong(region_indices, key, regions_count)
     for region in range(0, regions_count):
         right_mer_idx = region_indices[region][1]
         right_orientation_idx = -1
@@ -929,5 +935,5 @@ def one_sided_v2(
                 pos -= 1
         # endfor lkmer_idx to 0
 
-    # endfor regions_count
-    return 1
+    # endfor regions_countsahre
+    return corrections_made

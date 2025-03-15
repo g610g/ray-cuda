@@ -75,12 +75,12 @@ def calculate_metrics(reference_fasta, original_bam, corrected_bam):
 # work-please_aligned_sorted.bam
 # please_aligned_sorted.bam
 reference = (
-    "genetic-assets/final_data/fungi/GCF_000146045.2_R64_genomic.fna"
+    "genetic-assets/final_data/ecoli_datasets/GCF_000005845.2_ASM584v2_genomic.fna"
 )
 original = (
-    "genetic-assets/final_data/fungi/fungi_30coverage_1perc_aligned_sorted.bam"
+    "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2perc_aligned_sorted.bam"
 )
-corrected = "genetic-assets/final_data/fungi/fungi_30coverage_1percGPUMUSKET_aligned_sorted.bam"
+corrected = "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2percGPUMUSKET_aligned_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)

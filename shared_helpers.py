@@ -1,4 +1,6 @@
 import math
+
+from numba.parfors.parfor import lower_parfor_sequential
 import cudf
 from numba import cuda
 from helpers import (
@@ -81,6 +83,7 @@ def identify_trusted_regions_v2(
             if left_kmer >= 0:
                 regions[regions_count][0] = left_kmer
                 regions[regions_count][1] = right_kmer
+                regions[regions_count][2] = right_kmer - left_kmer
                 regions_count += 1
                 left_kmer = right_kmer = -1
             solid_region = False
@@ -88,6 +91,7 @@ def identify_trusted_regions_v2(
     if solid_region and left_kmer >= 0:
         regions[regions_count][0] = left_kmer
         regions[regions_count][1] = right_kmer
+        regions[regions_count][2] = right_kmer - left_kmer
         regions_count += 1
     return regions_count
 
@@ -535,6 +539,20 @@ def sort_ping(region_indices,key, regions_num):
         copy_kmer(key,region_indices[i], 0, 3)
         j = i - 1
         while j >= 0 and key[2] > region_indices[j][2]:
+            copy_kmer(region_indices[j + 1], region_indices[j], 0, 3)
+            j -= 1
+        # region_indices[j + 1] = key
+        copy_kmer(region_indices[j + 1], key, 0, 3)
+@cuda.jit(device=True)
+def sort_pong(region_indices,key, regions_num):
+    #already sorted
+    if regions_num == 1:
+        return
+
+    for i in range(1, regions_num):
+        copy_kmer(key,region_indices[i], 0, 3)
+        j = i - 1
+        while j >= 0 and key[2] < region_indices[j][2]:
             copy_kmer(region_indices[j + 1], region_indices[j], 0, 3)
             j -= 1
         # region_indices[j + 1] = key
