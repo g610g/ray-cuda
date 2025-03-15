@@ -237,8 +237,10 @@ def correct_two_sided(
     # for bases index 0 until size
     klen_idx = kmer_len - 1
     for ipos in range(0, size + 1):
-        # if ipos < kmer_len:
-        #     continue
+
+        # trusted base
+        if solids[ipos] == 1:
+            continue
         lpos = 0
         # right kmer
         copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
@@ -251,9 +253,6 @@ def correct_two_sided(
         else:
             copy_kmer(aux_kmer, encoded_bases, 0, kmer_len)
             lpos = ipos
-        # trusted base
-        if solids[ipos] == 1:
-            continue
 
         # checks for reverse complement and checking lowest canonical representation
         copy_kmer(rep, km, 0, kmer_len)
@@ -393,6 +392,7 @@ def correct_two_sided(
     return -1
 
 
+# TODO::utilize all of the GPU
 @cuda.jit()
 def one_sided_kernel(
     kmer_spectrum,
@@ -441,7 +441,7 @@ def one_sided_kernel(
         for idx in range(0, seqlen):
             local_read[idx] = reads[start + idx]
 
-        for _ in range(0, 4):
+        for _ in range(0, 2):
 
             num_corrections = correct_two_sided(
                 seqlen,
@@ -467,25 +467,24 @@ def one_sided_kernel(
                     dev_solids[threadIdx][idx] = solids[idx]
                     dev_reads_result[threadIdx][idx] = local_read[idx]
                 return
+
             # this read has more one than error within a kmer. Pass the read to one sided correction
-            if num_corrections < 0:
+            elif num_corrections < 0:
                 break
         # endfor two_sided
 
-        for idx in range(seqlen):
-            dev_solids[threadIdx][idx] = solids[idx]
-
         for nerr in range(1, maxIters + 1):
-
             # TODO:: to be fixed
             distance = maxIters - nerr + 1
-            for _ in range(4):
+            #TODO::create pingpong comp region
+            for _ in range(2):
 
                 # reset solids and aux_corrections every before run of onesided
                 for idx in range(seqlen):
                     solids[idx] = -1
                     aux_corrections[idx] = 0
                     local_read_aux[idx] = local_read[idx]
+
 
                 corrections_made = one_sided_v2(
                     local_read,
@@ -524,10 +523,11 @@ def one_sided_kernel(
                             local_read[i] = aux_corrections[i]
 
             # start voting refinement here
-            # copy_kmer(local_read, local_read, 0, seqlen)
-            # encode_bases(local, seqlen)
+
+            copy_kmer(encoded_bases, local_read, 0, seqlen)
+            encode_bases(encoded_bases, seqlen)
             max_vote = cast_votes(
-                local_read,
+                encoded_bases,
                 voting_matrix,
                 seqlen,
                 kmer_len,
@@ -550,7 +550,7 @@ def one_sided_kernel(
 
         for idx in range(0, seqlen):
             dev_reads_result[threadIdx][idx] = local_read[idx]
-        # cuda.syncthreads()
+        cuda.syncthreads()
 
 
 # for orientation going to the right of the read

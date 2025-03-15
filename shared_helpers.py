@@ -393,7 +393,7 @@ def copy_kmer(aux_kmer, local_read, start, end):
         aux_kmer[i - start] = local_read[i]
 
 
-# find base mutations for a kmer
+# NOTE:: semantically and syntactically correct
 @cuda.jit(device=True)
 def select_mutations(
     spectrum, bases, km, kmer_len, pos, selected_bases, rev_comp, aux_km, aux_km2
@@ -420,7 +420,10 @@ def select_mutations(
             # check if whose lexicographically smaller between auxKm2 and auxkm
             if lower(aux_km2, aux_km, kmer_len):
                 copy_kmer(aux_km2, aux_km, 0, kmer_len)
-
+            # 234 -> 123 134
+            # 123 -> 124
+            # 124 -> 134
+            # = 434, selected_bases = (1, occurence)
             # use the lexicographically small during checking the spectrum
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
@@ -521,3 +524,18 @@ def encode_bases(bases, seqlen):
 def seed_ones(local_read, seqlen):
     for idx in range(seqlen):
         local_read[idx] = 1
+
+@cuda.jit(device=True)
+def sort_ping(region_indices,key, regions_num):
+    #already sorted
+    if regions_num == 1:
+        return
+
+    for i in range(1, regions_num):
+        copy_kmer(key,region_indices[i], 0, 3)
+        j = i - 1
+        while j >= 0 and key[2] > region_indices[j][2]:
+            copy_kmer(region_indices[j + 1], region_indices[j], 0, 3)
+            j -= 1
+        # region_indices[j + 1] = key
+        copy_kmer(region_indices[j + 1], key, 0, 3)

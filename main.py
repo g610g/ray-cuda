@@ -4,19 +4,20 @@ import numpy as np
 # cpus = 48
 # batch_size = size // cpus
 
+def sort_ping(region_indices, regions_num):
+    #already sorted
+    if regions_num == 1:
+        return
 
-def transform_key(km, len):
+    for i in range(1, regions_num):
+        key = region_indices[i]
+        j = i - 1
+        while j >= 0 and key[2] > region_indices[j][2]:
+            region_indices[j + 1] = region_indices[j]
+            j -= 1
+        region_indices[j + 1] = key
+region_indices = [[1, 3, 2], [5, 10, 5], [10, 25, 5], [30, 50, 20]]
+regions_num = 4
 
-    multiplier = 1
-    key = 0
-    while len != 0:
-        key += km[len - 1] * multiplier
-        multiplier *= 10
-        len -= 1
-
-    return key
-np_arr = np.array([3,2,2,1,2,4,4,4,4,1,4,3,3,2,3,1,1,3,2] )
-# sorted_by_first_col = np_arr[np_arr[:, 0].argsort()]
-# sorted_by_second_col = np_arr[np_arr[:, 1].argsort()]
-print(transform_key(np_arr, 19))
-
+sort_ping(region_indices, regions_num)
+print(region_indices)

@@ -79,7 +79,7 @@ class KmerExtractorGPU:
         tbp = 1024
         # bpg = math.ceil(kmer_np.shape[0] / tbp)
         bpg = (kmer_np.shape[0] + tbp) // tbp
-        reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length, dev_kmer_array)
+        reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length)
         kmers = dev_kmers.copy_to_host()
         return [kmers, dev_kmer_array.copy_to_host()]
 
@@ -113,19 +113,19 @@ class KmerExtractorGPU:
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         print(f"final result shape is: {concat_result.shape}")
         print(f"Kmers before calculating canonical kmers: {concat_result}")
-        # [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(concat_result)
+        [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(concat_result)
 
-        # final_kmers = (
-        #     cudf.DataFrame(
-        #         {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
-        #     )
-        #     .groupby("canonical")
-        #     .sum()
-        #     .reset_index()
-        # )
-        # final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
-        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return concat_result
+        final_kmers = (
+            cudf.DataFrame(
+                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+            )
+            .groupby("canonical")
+            .sum()
+            .reset_index()
+        )
+        final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
+        print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
     def calculate_kmers_multiplicity(self, reads, batch_size):
@@ -136,7 +136,8 @@ class KmerExtractorGPU:
         read_s = cudf.Series(reads, name="reads")
         read_df = read_s.to_frame()
 
-        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
+        replaced_df = read_df["reads"].str.replace("N", "A")
+        read_df["translated"] = replaced_df.str.translate(self.translation_table)
 
         # computes canonical kmers
         ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
