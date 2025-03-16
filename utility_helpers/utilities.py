@@ -71,7 +71,7 @@ def test_return_value(val, iter, bases):
 
 @cuda.jit()
 def reverse_comp_kmer(dev_kmers, kmer_length):
-    MAX_KMER_LEN = 19
+    MAX_KMER_LEN = 17
     threadIdx = cuda.grid(1)
     if threadIdx < dev_kmers.shape[0]:
         rep = cuda.local.array(MAX_KMER_LEN, dtype="uint8")
@@ -111,6 +111,7 @@ def check_solids(solids, seqlen):
                 count += 1
         if count == seqlen:
             ones += 1
+            # print(solid)
     print(f"{ones} solid reads out of  {solids.shape[0]} reads")
 
 
@@ -133,4 +134,15 @@ def check_has_corrected(corrected):
             corrected_count += 1
     print(
         f"{corrected_count} number of reads that has been corrected out of  {len(corrected)} reads"
+    )
+@ray.remote(num_cpus=1)
+def calculate_non_solids(solids, seqlen):
+    unsolid = 0
+    for solid in solids:
+        for element in solid:
+            if element < 0 or element == 0:
+                unsolid += 1
+                break
+    print(
+        f"{unsolid} number of reads that is not solid out of {len(solids)} reads"
     )

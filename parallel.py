@@ -225,41 +225,44 @@ def ping_resources():
 
 
 @cuda.jit()
-def kernel_test(dev_arr):
+def kernel_test(dev_arr,dev_len):
     threadIdx = cuda.grid(1)
     if threadIdx < dev_arr.shape[0]:
         region_indices = cuda.local.array((10, 3), dtype='uint32')
         key = cuda.local.array(3, dtype='uint32')
          # Initialize the array elements individually
-        region_indices[3, 0] = 1
-        region_indices[3, 1] = 3
-        region_indices[3, 2] = 2
-        
-        region_indices[2, 0] = 5
-        region_indices[2, 1] = 10
-        region_indices[2, 2] = 5
-        
-        region_indices[1, 0] = 10
-        region_indices[1, 1] = 25
-        region_indices[1, 2] = 15
-        
-        region_indices[0, 0] = 30
-        region_indices[0, 1] = 50
-        region_indices[0, 2] = 20
-        regions_num = 4
-        sort_pong(region_indices, key, regions_num)
-        for i in range(regions_num):
-            for j in range(3):
-                dev_arr[threadIdx][i][j] = region_indices[i][j]
+        # region_indices[3, 0] = 1
+        # region_indices[3, 1] = 3
+        # region_indices[3, 2] = 2
+        #
+        # region_indices[2, 0] = 5
+        # region_indices[2, 1] = 10
+        # region_indices[2, 2] = 5
+        #
+        # region_indices[1, 0] = 10
+        # region_indices[1, 1] = 25
+        # region_indices[1, 2] = 15
+        #
+        # region_indices[0, 0] = 30
+        # region_indices[0, 1] = 50
+        # region_indices[0, 2] = 20
+        # regions_num = 4
+        # sort_pong(region_indices, key, regions_num)
+        # for i in range(regions_num):
+        #     for j in range(3):
+        #         dev_arr[threadIdx][i][j] = region_indices[i][j]
+        dev_len[threadIdx][0] = len(region_indices) // 2
 @ray.remote(num_gpus=1, num_cpus=1)
 def test():
     arr = np.zeros((10, 10, 3), dtype="uint32")
+    length = np.zeros((10, 2), dtype="uint32")
     dev_arr = cuda.to_device(arr)
+    dev_len = cuda.to_device(length)
     tpb = len(arr)
     bpg = (len(arr) + tpb) // tpb
 
-    kernel_test[bpg, tpb](dev_arr)
-    return dev_arr.copy_to_host()
+    kernel_test[bpg, tpb](dev_arr, dev_len)
+    return dev_len.copy_to_host()
 
 if __name__ == "__main__":
     print(ray.get(test.remote()))
@@ -269,7 +272,7 @@ if __name__ == "__main__":
         print(usage)
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
-    kmer_len = 19
+    kmer_len = 17
     parse_reads_starttime = time.perf_counter()
     reads = fastq_parser.parse_fastq_file(sys.argv[1])
     parse_reads_endtime = time.perf_counter()
@@ -311,16 +314,15 @@ if __name__ == "__main__":
     # remove unique kmers
     non_unique_kmers = kmer_occurences[kmer_occurences["multiplicity"] > 1]
     print("Done removing unique kmers")
-
     occurence_data = non_unique_kmers["multiplicity"].to_numpy().astype(np.uint64)
     max_occurence = occurence_data.max()
     print(f"max occurence data: {max_occurence}")
 
     print(f"Non unique kmers {non_unique_kmers}")
     cutoff_threshold = calculatecutoff_threshold(
-        occurence_data, math.ceil(max_occurence / 2)
+        occurence_data, max_occurence // 2
     )
-    # cutoff_threshold = 79
+    # cutoff_threshold = 10
     print(f"cutoff threshold: {cutoff_threshold}")
 
     batch_size = len(offsets) // cpus_detected
@@ -344,6 +346,9 @@ if __name__ == "__main__":
     print(f"sorted by occurence {sorted_by_occurence[:100]}")
     print(f"sorted by kmer {sorted_kmer_np[:100]}")
     print(f"offsets {offsets}")
+
+
+    #NOTE::correcting by batch is not used currently
     # we will try correcting by batch
     sorted_kmer_np_reference = ray.put(sorted_kmer_np)
     correction_batch_size = 1000000
@@ -357,42 +362,22 @@ if __name__ == "__main__":
     )
     print(corrected_reads_array)
     print(corrected_reads_array.dtype)
-    # for correction_batch_idx in range(0, offsets.shape[0], correction_batch_size):
-    #     current_offset_batch = offsets[
-    #         correction_batch_idx : correction_batch_idx + correction_batch_size
-    #     ]
-    #     last_idx = current_offset_batch[-1][1]
-    #     current_reads = reads_1d[last_end_idx:last_idx]
-    #     print(f"last end idx: {last_end_idx} last_idx: {last_idx}")
-    #     [corrected_reads_array, votes, corrections, onesided_flags] = ray.get(
-    #         remote_core_correction.remote(
-    #             sorted_kmer_np_reference,
-    #             current_reads,
-    #             current_offset_batch,
-    #             kmer_len,
-    #             last_end_idx,
-    #         )
-    #     )
-    #     # ray.get([check_twosided_corrections.remote(corrections[idx: idx + batch_size]) for idx in range(0, len(corrections), batch_size)])
-    #     last_end_idx = last_idx
-    #     correction_result.append(corrected_reads_array)
-    # corrected_reads_array = np.concatenate(correction_result, dtype="uint8")
 
     back_sequence_start_time = time.perf_counter()
     corrected_2d_reads_array = ray.get(
         back_to_sequence_helper.remote(corrected_reads_array, offsets)
     )
-    # ray.get(
-    #     [
-    #         bench_corrections.remote(
-    #             corrected_2d_reads_array[idx : idx + batch_size], 100
-    #         )
-    #         for idx in range(0, len(corrected_2d_reads_array), batch_size)
-    #     ]
-    # )
+    print(solids_host[1])
+    print(solids_host[2])
     ray.get(
         [
             check_solids.remote(solids_host[idx : idx + batch_size], 100)
+            for idx in range(0, len(solids_host), batch_size)
+        ]
+    )
+    ray.get(
+        [
+           calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
             for idx in range(0, len(solids_host), batch_size)
         ]
     )
@@ -402,14 +387,6 @@ if __name__ == "__main__":
             for idx in range(0, len(solids_host), batch_size)
         ]
     )
-    # ray.get(
-    #     [
-    #         check_has_corrected.remote(
-    #             corrected_tracker[idx : idx + batch_size]
-    #         )
-    #         for idx in range(0, len(corrected_tracker), batch_size)
-    #     ]
-    # )
     back_sequence_end_time = time.perf_counter()
     print(
         f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}"

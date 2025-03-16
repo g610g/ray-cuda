@@ -167,13 +167,10 @@ def back_to_sequence_helper(reads, offsets):
 
     dev_reads = cuda.to_device(reads)
     dev_offsets = cuda.to_device(offsets)
-    dev_reads_result = cuda.device_array(
-        (offsets.shape[0], max_segment_length), dtype="uint8"
-    )
     tpb = 1024
     bpg = (offsets.shape[0] + tpb) // tpb
 
-    back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets, dev_reads_result)
+    back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets)
 
     end.record()
     end.synchronize()
@@ -185,21 +182,13 @@ def back_to_sequence_helper(reads, offsets):
 
 
 @cuda.jit
-def back_sequence_kernel(reads, offsets, reads_result):
+def back_sequence_kernel(reads, offsets):
     threadIdx = cuda.grid(1)
-    MAX_LEN = 300
-    local_reads = cuda.local.array(MAX_LEN, dtype="uint8")
     if threadIdx < offsets.shape[0]:
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         seqlen = end - start
 
-        # to_local_reads(reads, local_reads, start, end)
         to_decimal_ascii(reads[threadIdx], seqlen)
-
-        # copy the assigned read for this thread into the 2d reads_result
-        # for idx in range(seqlen):
-        #     reads_result[threadIdx][idx] = local_reads[idx]
-        #
 
 
 # normal python function for giving insights by differentiating before and after solids
@@ -383,10 +372,9 @@ def predeccessor(
 
 @cuda.jit(device=True)
 def all_solid_base(solids, seqlen):
-    for idx in range(seqlen):
+    for idx in range(0, seqlen):
         if solids[idx] == -1:
             return False
-
     return True
 
 

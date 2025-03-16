@@ -1,17 +1,16 @@
 from numba import cuda
+from numba.cuda import target
 from shared_helpers import (
     all_solid_base,
     complement,
     encode_bases,
     identify_solid_bases,
-    forward_base,
     identify_trusted_regions,
     identify_trusted_regions_v2,
     lower,
     predeccessor,
     predeccessor_v2,
     reverse_comp,
-    seed_ones,
     sort_ping,
     sort_pong,
     successor,
@@ -226,11 +225,11 @@ def correct_two_sided(
         solids[i] = -1
 
     # NOTE:: an encoded version of the current read
-    copy_kmer(encoded_bases, local_read, 0, seqlen)
-    encode_bases(encoded_bases, seqlen)
+    # copy_kmer(encoded_bases, local_read, 0, seqlen)
+    # encode_bases(encoded_bases, seqlen)
 
     identify_solid_bases(
-        encoded_bases, kmer_len, kmer_spectrum, solids, km, size, aux_kmer
+        local_read, kmer_len, kmer_spectrum, solids, km, size, aux_kmer
     )
     # check whether solids array does not contain -1, return 0 if yes
     if all_solid_base(solids, seqlen):
@@ -245,15 +244,15 @@ def correct_two_sided(
             continue
         lpos = 0
         # right kmer
-        copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
+        copy_kmer(km, local_read, ipos, ipos + kmer_len)
 
         # left kmer
         if ipos >= kmer_len:
-            copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
+            copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
             lpos = klen_idx
 
         else:
-            copy_kmer(aux_kmer, encoded_bases, 0, kmer_len)
+            copy_kmer(aux_kmer, local_read, 0, kmer_len)
             lpos = ipos
 
         # checks for reverse complement and checking lowest canonical representation
@@ -324,10 +323,10 @@ def correct_two_sided(
     for ipos in range(size + 1, seqlen):
 
         # left kmer
-        copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
+        copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
 
         # right kmer
-        copy_kmer(km, encoded_bases, size, seqlen)
+        copy_kmer(km, local_read, size, seqlen)
 
         if solids[ipos] == 1:
             continue
@@ -410,16 +409,16 @@ def one_sided_kernel(
 
         # return early if two sided deems the read as solid
 
-        MAX_LEN = 300
-        DEFAULT_KMER_LEN = 19
+        MAX_LEN = 100
+        DEFAULT_KMER_LEN = 17
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         # start, end = initial_start - last_end_idx, initial_end - last_end_idx
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         region_indices = cuda.local.array((20, 3), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
-        selected_bases = cuda.local.array((4, 2), dtype="uint16")
-        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint16")
-        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint16")
+        selected_bases = cuda.local.array((4, 2), dtype="uint64")
+        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
@@ -430,6 +429,7 @@ def one_sided_kernel(
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
         encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
         key = cuda.local.array(3, dtype='uint32')
+        corrections = cuda.local.array((MAX_LEN, 2), dtype='int64')
         maxIters = 4
         min_vote = 3
         seqlen = end - start
@@ -443,36 +443,38 @@ def one_sided_kernel(
         for idx in range(0, seqlen):
             local_read[idx] = reads[start + idx]
 
-        for _ in range(0, 2):
-
-            num_corrections = correct_two_sided(
-                seqlen,
-                kmer_spectrum,
-                km,
-                aux_km,
-                kmer_len,
-                bases,
-                solids,
-                local_read,
-                lpossible_base_mutations,
-                rpossible_base_mutations,
-                size,
-                rep,
-                aux_km2,
-                encoded_bases,
-            )
-            # this read is error free. Stop correction
-            # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
-            # returning, we have to copy it back into global memory stored reads
-            if num_corrections == 0:
-                for idx in range(0, seqlen):
-                    dev_solids[threadIdx][idx] = solids[idx]
-                    dev_reads_result[threadIdx][idx] = local_read[idx]
-                return
-
-            # this read has more one than error within a kmer. Pass the read to one sided correction
-            elif num_corrections < 0:
-                break
+        cuda.syncthreads()
+        #NOTE:: CHECKING THE EFFECT OF TWO SIDED INTO THE CORRECTION
+        # for _ in range(0, 2):
+        #
+        #     num_corrections = correct_two_sided(
+        #         seqlen,
+        #         kmer_spectrum,
+        #         km,
+        #         aux_km,
+        #         kmer_len,
+        #         bases,
+        #         solids,
+        #         local_read,
+        #         lpossible_base_mutations,
+        #         rpossible_base_mutations,
+        #         size,
+        #         rep,
+        #         aux_km2,
+        #         encoded_bases,
+        #     )
+        #     # this read is error free. Stop correction
+        #     # on first iteration, there might be correction reflected in local read, then on the second iteration all bases are solids, then before
+        #     # returning, we have to copy it back into global memory stored reads
+        #     if num_corrections == 0:
+        #         for idx in range(0, seqlen):
+        #             dev_solids[threadIdx][idx] = solids[idx]
+        #             dev_reads_result[threadIdx][idx] = local_read[idx]
+        #         return
+        #
+        #     # this read has more one than error within a kmer. Pass the read to one sided correction
+        #     elif num_corrections < 0:
+        #         break
         # endfor two_sided
 
         for nerr in range(1, maxIters + 1):
@@ -482,9 +484,6 @@ def one_sided_kernel(
             for _ in range(2):
                 ping = not ping
                 # reset solids and aux_corrections every before run of onesided
-                for idx in range(seqlen):
-                    solids[idx] = -1
-                    aux_corrections[idx] = 0
                 corrections_made = one_sided_v2(
                     local_read,
                     aux_corrections,
@@ -504,13 +503,15 @@ def one_sided_kernel(
                     aux_km2,
                     encoded_bases,
                     key,
-                    ping
+                    ping,
+                    corrections
                 )
 
                 # returns -1 means all bases are solid
                 if corrections_made == -1:
                     for idx in range(0, seqlen):
                         dev_reads_result[threadIdx][idx] = local_read[idx]
+                        dev_solids[threadIdx][idx] = solids[idx]
                     return
 
                 # no corrections made
@@ -519,9 +520,9 @@ def one_sided_kernel(
 
                 # a correction has been recorded and put the corrections in local read
                 elif corrections_made > 0:
-                    for i in range(seqlen):
-                        if aux_corrections[i] > 0 and aux_corrections[i] < 5:
-                            local_read[i] = aux_corrections[i]
+                    for i in range(corrections_made):
+                        if corrections[i][0] > 0 and corrections[i][0] < 5 and corrections[i][1] < seqlen:
+                            local_read[corrections[i][1]] = corrections[i][0]
 
             # start voting refinement here
 
@@ -550,9 +551,9 @@ def one_sided_kernel(
                 apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
 
         for idx in range(0, seqlen):
+            dev_solids[threadIdx][idx] = solids[idx]
             dev_reads_result[threadIdx][idx] = local_read[idx]
-        cuda.syncthreads()
-
+    cuda.syncthreads()
 
 # for orientation going to the right of the read
 @cuda.jit(device=True)
@@ -712,7 +713,12 @@ def one_sided_v2(
     encoded_bases,
     key,
     ping,
+    corrections,
 ):
+
+    for idx in range(seq_len):
+        solids[idx] = -1
+        aux_corrections[idx] = 0
 
     copy_kmer(encoded_bases, original_read, 0, seq_len)
     encode_bases(encoded_bases, seq_len)
@@ -731,24 +737,24 @@ def one_sided_v2(
         solids,
         region_indices,
     )
-    if all_solid_base(solids, seq_len) or regions_count == 0:
+    if all_solid_base(solids, seq_len):
         return -1
+
     if ping:
         sort_ping(region_indices, key, regions_count)
     else:
         sort_pong(region_indices, key, regions_count)
+
     for region in range(0, regions_count):
         right_mer_idx = region_indices[region][1]
         right_orientation_idx = -1
         last_position = -1
         num_corrections = 0
         copy_kmer(local_read_aux, encoded_bases, 0, seq_len)
-        for target_pos in range(right_mer_idx + 1, seq_len):
+        for spos in range(right_mer_idx + 1, size + 1):
+            target_pos = spos + (kmer_len - 1)
             if solids[target_pos] == 1:
                 break
-
-            spos = target_pos - (kmer_len - 1)
-
             copy_kmer(ascii_kmer, local_read_aux, spos, target_pos + 1)
 
             # checks for reverse complement and checking lowest canonical representation
@@ -780,11 +786,13 @@ def one_sided_v2(
                 if num_bases == 1:
                     if right_orientation_idx == -1:
                         right_orientation_idx = target_pos
-                    aux_corrections[target_pos] = selected_bases[0][0]
+                    corrections[corrections_made][0] = selected_bases[0][0]
+                    corrections[corrections_made][1] = target_pos
+                    # aux_corrections[target_pos] = selected_bases[0][0]
                     local_read_aux[target_pos] = selected_bases[0][0]
                     corrections_made += 1
                     done = True
-                elif num_bases > 1:
+                else:
                     best_base = -1
                     best_base_occurence = -1
                     for idx in range(0, num_bases):
@@ -808,7 +816,9 @@ def one_sided_v2(
                         if right_orientation_idx == -1:
                             right_orientation_idx = target_pos
 
-                        aux_corrections[target_pos] = best_base
+                        corrections[corrections_made][0] = best_base
+                        corrections[corrections_made][1] = target_pos
+                        # aux_corrections[target_pos] = best_base
                         local_read_aux[target_pos] = best_base
                         corrections_made += 1
                         done = True
@@ -822,9 +832,11 @@ def one_sided_v2(
                         # revert back reads if corrections exceed max_corrections
                         if num_corrections > max_corrections:
                             for pos in range(last_position, target_pos + 1):
-                                aux_corrections[pos] = 0
+                                corrections[corrections_made - 1][0] = 0
+                                corrections[corrections_made - 1][1] = 0
+                                corrections_made -= 1
 
-                            corrections_made -= num_corrections
+                            # corrections_made -= num_corrections
                             break
                             # break correction for this orientation after reverting back kmers
                     else:
@@ -879,12 +891,14 @@ def one_sided_v2(
 
                     # apply correction
                     if num_bases == 1:
-                        aux_corrections[pos] = selected_bases[0][0]
+                        corrections[corrections_made][0] = selected_bases[0][0]
+                        corrections[corrections_made][1] = pos
+                        # aux_corrections[pos] = selected_bases[0][0]
                         local_read_aux[pos] = selected_bases[0][0]
                         corrections_made += 1
                         done = True
 
-                    elif num_bases > 1:
+                    else:
                         best_base = -1
                         best_base_occurence = -1
                         for idx in range(0, num_bases):
@@ -904,7 +918,9 @@ def one_sided_v2(
                                     best_base = selected_bases[idx][0]
 
                         if best_base > 0 and best_base_occurence > 0:
-                            aux_corrections[pos] = best_base
+                            corrections[corrections_made][0] = best_base
+                            corrections[corrections_made][1] = pos
+                            # aux_corrections[pos] = best_base
                             local_read_aux[pos] = best_base
                             corrections_made += 1
                             done = True
@@ -918,9 +934,12 @@ def one_sided_v2(
                             # revert kmer back if corrections done exceeds max_corrections
                             if num_corrections > max_corrections:
                                 for base_idx in range(pos, last_position + 1):
-                                    aux_corrections[base_idx] = 0
+                                    corrections[corrections_made - 1][0] = 0
+                                    corrections[corrections_made - 1][1] = 0
+                                    # aux_corrections[base_idx] = 0
+                                    corrections_made -= 1
 
-                                corrections_made -= num_corrections
+                                # corrections_made -= num_corrections
                                 break
                         else:
                             last_position = pos

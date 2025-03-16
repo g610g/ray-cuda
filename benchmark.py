@@ -78,9 +78,9 @@ reference = (
     "genetic-assets/final_data/ecoli_datasets/GCF_000005845.2_ASM584v2_genomic.fna"
 )
 original = (
-    "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2perc_aligned_sorted.bam"
+    "genetic-assets/final_data/ecoli_datasets/ecoli_70coverage_2perc_aligned_sorted.bam"
 )
-corrected = "genetic-assets/final_data/ecoli_datasets/ecoli_30coverage_2percGPUMUSKET_aligned_sorted.bam"
+corrected = "genetic-assets/final_data/ecoli_datasets/ecoli_70coverage_2percGPUMUSKET_aligned_sorted.bam"
 
 metrics = calculate_metrics(reference, original, corrected)
 print("Metrics:", metrics)
