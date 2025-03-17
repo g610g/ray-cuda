@@ -318,13 +318,13 @@ def predeccessor_v2(
     rep,
 ):
     # ipos is the first preceeding neighbor
-    # ipos = target_pos - 1
-    if target_pos <= 0 or distance <= 0:
+    ipos = target_pos - 1
+    if ipos <= 0 or distance <= 0:
         return True
 
-    spos = max(0, target_pos - distance)
-    counter = 1
-    idx = target_pos - 1
+    spos = max(0, ipos - distance)
+    counter = 2
+    idx = ipos - 1
     while idx >= spos:
         copy_kmer(aux_kmer, local_read, idx, idx + kmer_length)
         aux_kmer[counter] = alternative_base
@@ -403,7 +403,6 @@ def select_mutations(
             continue
         else:
             # consider the reverse complement of mutated aux_km and store in aux_km2
-
             aux_km[base_index] = bases[idx]
             copy_kmer(aux_km2, aux_km, 0, kmer_len)
             reverse_comp(aux_km2, kmer_len)
@@ -411,18 +410,17 @@ def select_mutations(
             # check if whose lexicographically smaller between auxKm2 and auxkm
             if lower(aux_km2, aux_km, kmer_len):
                 copy_kmer(aux_km2, aux_km, 0, kmer_len)
-            # 234 -> 123 134
-            # 123 -> 124
-            # 124 -> 134
-            # = 434, selected_bases = (1, occurence)
+
             # use the lexicographically small during checking the spectrum
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
+
                 # use complement of selected base if rev comp flag is active
                 if rev_comp:
                     base = complement(bases[idx])
                 else:
                     base = bases[idx]
+
                 # add range restriction
                 if base > 0 and base < 5:
                     selected_bases[num_bases][0] = base
@@ -491,7 +489,7 @@ def complement(base):
 
 @cuda.jit(device=True)
 def to_decimal_ascii(local_read, seqlen):
-    for idx in range(seqlen):
+    for idx in range(0, seqlen):
         if local_read[idx] == 1:
             local_read[idx] = 65
         elif local_read[idx] == 2:
@@ -502,7 +500,9 @@ def to_decimal_ascii(local_read, seqlen):
             local_read[idx] = 84
         elif local_read[idx] == 5:
             local_read[idx] = 78
-
+        else:
+            #NOTE:: wala dapat zeros sa range sa seqlen. But anyway just for checking rani
+            local_read[idx] = 0
 
 @cuda.jit(device=True)
 def encode_bases(bases, seqlen):

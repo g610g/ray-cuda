@@ -409,14 +409,14 @@ def one_sided_kernel(
 
         # return early if two sided deems the read as solid
 
-        MAX_LEN = 100
-        DEFAULT_KMER_LEN = 17
+        MAX_LEN = 400
+        DEFAULT_KMER_LEN = 18
         start, end = offsets[threadIdx][0], offsets[threadIdx][1]
         # start, end = initial_start - last_end_idx, initial_end - last_end_idx
         solids = cuda.local.array(MAX_LEN, dtype="int8")
         region_indices = cuda.local.array((20, 3), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
-        selected_bases = cuda.local.array((4, 2), dtype="uint64")
+        selected_bases = cuda.local.array((6, 2), dtype="uint64")
         lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
         rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
@@ -425,7 +425,6 @@ def one_sided_kernel(
         rep = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         bases = cuda.local.array(4, dtype="uint8")
         local_read = cuda.local.array(MAX_LEN, dtype="uint8")
-        aux_corrections = cuda.local.array(MAX_LEN, dtype="uint8")
         local_read_aux = cuda.local.array(MAX_LEN, dtype="uint8")
         encoded_bases = cuda.local.array(MAX_LEN, dtype="uint8")
         key = cuda.local.array(3, dtype='uint32')
@@ -441,9 +440,9 @@ def one_sided_kernel(
 
         # transfer global memory store reads to local thread memory read
         for idx in range(0, seqlen):
-            local_read[idx] = reads[start + idx]
+            local_read[idx] = reads[threadIdx][idx]
 
-        cuda.syncthreads()
+        # cuda.syncthreads()
         #NOTE:: CHECKING THE EFFECT OF TWO SIDED INTO THE CORRECTION
         # for _ in range(0, 2):
         #
@@ -479,20 +478,20 @@ def one_sided_kernel(
 
         for nerr in range(1, maxIters + 1):
             # TODO:: to be fixed
-            distance = maxIters - nerr + 1
+            distance = (maxIters - nerr) + 1
             ping = False
             for _ in range(2):
                 ping = not ping
                 # reset solids and aux_corrections every before run of onesided
-                corrections_made = one_sided_v2(
+                corrections_made = onesidedv2(
                     local_read,
-                    aux_corrections,
                     km,
                     aux_km,
                     region_indices,
                     selected_bases,
                     kmer_len,
                     seqlen,
+                    size,
                     kmer_spectrum,
                     solids,
                     bases,
@@ -553,7 +552,7 @@ def one_sided_kernel(
         for idx in range(0, seqlen):
             dev_solids[threadIdx][idx] = solids[idx]
             dev_reads_result[threadIdx][idx] = local_read[idx]
-    cuda.syncthreads()
+        cuda.syncthreads()
 
 # for orientation going to the right of the read
 @cuda.jit(device=True)
@@ -693,15 +692,15 @@ def correct_read_one_sided_left(
 
 
 @cuda.jit(device=True)
-def one_sided_v2(
+def onesidedv2(
     original_read,
-    aux_corrections,
     ascii_kmer,
     aux_kmer,
     region_indices,
     selected_bases,
     kmer_len,
     seq_len,
+    size,
     spectrum,
     solids,
     bases,
@@ -718,13 +717,11 @@ def one_sided_v2(
 
     for idx in range(seq_len):
         solids[idx] = -1
-        aux_corrections[idx] = 0
 
     copy_kmer(encoded_bases, original_read, 0, seq_len)
     encode_bases(encoded_bases, seq_len)
 
     corrections_made = 0
-    size = seq_len - kmer_len
 
     regions_count = identify_trusted_regions_v2(
         encoded_bases,
@@ -788,7 +785,6 @@ def one_sided_v2(
                         right_orientation_idx = target_pos
                     corrections[corrections_made][0] = selected_bases[0][0]
                     corrections[corrections_made][1] = target_pos
-                    # aux_corrections[target_pos] = selected_bases[0][0]
                     local_read_aux[target_pos] = selected_bases[0][0]
                     corrections_made += 1
                     done = True
@@ -818,7 +814,6 @@ def one_sided_v2(
 
                         corrections[corrections_made][0] = best_base
                         corrections[corrections_made][1] = target_pos
-                        # aux_corrections[target_pos] = best_base
                         local_read_aux[target_pos] = best_base
                         corrections_made += 1
                         done = True
@@ -836,7 +831,6 @@ def one_sided_v2(
                                 corrections[corrections_made - 1][1] = 0
                                 corrections_made -= 1
 
-                            # corrections_made -= num_corrections
                             break
                             # break correction for this orientation after reverting back kmers
                     else:
@@ -893,7 +887,6 @@ def one_sided_v2(
                     if num_bases == 1:
                         corrections[corrections_made][0] = selected_bases[0][0]
                         corrections[corrections_made][1] = pos
-                        # aux_corrections[pos] = selected_bases[0][0]
                         local_read_aux[pos] = selected_bases[0][0]
                         corrections_made += 1
                         done = True
@@ -920,7 +913,6 @@ def one_sided_v2(
                         if best_base > 0 and best_base_occurence > 0:
                             corrections[corrections_made][0] = best_base
                             corrections[corrections_made][1] = pos
-                            # aux_corrections[pos] = best_base
                             local_read_aux[pos] = best_base
                             corrections_made += 1
                             done = True
@@ -933,13 +925,11 @@ def one_sided_v2(
 
                             # revert kmer back if corrections done exceeds max_corrections
                             if num_corrections > max_corrections:
-                                for base_idx in range(num_corrections):
+                                for _ in range(num_corrections):
                                     corrections[corrections_made - 1][0] = 0
                                     corrections[corrections_made - 1][1] = 0
-                                    # aux_corrections[base_idx] = 0
                                     corrections_made -= 1
 
-                                # corrections_made -= num_corrections
                                 break
                         else:
                             last_position = pos

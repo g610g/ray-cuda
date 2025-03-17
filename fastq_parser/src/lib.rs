@@ -169,7 +169,8 @@ fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str>
             let mut read_vector = vec![];
             for result in reader.records() {
                 if let Ok(record) = result {
-                    let string_record = byte_to_string(record.seq()).unwrap();
+                    let mut vec_record = record.seq().to_vec();
+                    let string_record = byte_to_string(&mut vec_record).unwrap();
                     read_vector.push(string_record);
                 }
             }
@@ -282,8 +283,8 @@ fn write_fastq_file(
         .rows()
         .into_iter()
         .map(|row| {
-            let vector_row = row.to_vec();
-            byte_to_string(&vector_row)
+            let mut vector_row = row.to_vec();
+            byte_to_string(&mut vector_row)
         })
         .collect();
 
@@ -318,7 +319,10 @@ fn write_fastq_file(
 }
 
 //this function unwraps for now. Add better error handling
-fn byte_to_string(byte_array: &[u8]) -> Result<String, PyErr> {
+fn byte_to_string(byte_array: &mut Vec<u8>) -> Result<String, PyErr> {
+    if let Some(cleaned) = byte_array.iter().position(|&b| b == 0){
+        byte_array.truncate(cleaned);
+    }
     match std::str::from_utf8(byte_array) {
         Ok(string) => Ok(string.to_string()),
         Err(_) => Err(PyErr::new::<PyTypeError, _>("Invalid bytes array")),

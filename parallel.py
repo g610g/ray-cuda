@@ -96,7 +96,7 @@ def test_cuda_array_context():
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def remote_core_correction(
-    kmer_spectrum, reads_1d, offsets, kmer_len, last_end_idx, batch_size
+    kmer_spectrum, reads_2d, offsets, kmer_len, last_end_idx, batch_size
 ):
     cuda.profile_start()
     start = cuda.event()
@@ -104,27 +104,28 @@ def remote_core_correction(
     start.record()
     print(f"offset shape: {offsets.shape}")
     print(f"offset dtype: {offsets.dtype}")
-    print(f"reads dtype: {reads_1d.dtype}")
+    print(f"reads dtype: {reads_2d.dtype}")
     print(f"Kmer spectrum: {kmer_spectrum}")
     # transfering necessary data into GPU side
-    dev_reads_1d = cuda.to_device(reads_1d)
+    MAX_READ_LENGTH = 400
+    dev_reads_2d = cuda.to_device(reads_2d)
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
-    dev_reads_2d = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="uint8"))
-    solids = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int8"))
+    dev_reads_corrected_2d = cuda.to_device(np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="uint8"))
+    solids = cuda.to_device(np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="int8"))
     # allocating gpu threads
     # bpg = math.ceil(offsets.shape[0] // tpb)
-    tpb = 256
+    tpb = 512
     bpg = (offsets.shape[0] + tpb) // tpb
 
     one_sided_kernel[bpg, tpb](
         dev_kmer_spectrum,
-        dev_reads_1d,
+        dev_reads_2d,
         dev_offsets,
         kmer_len,
         max_votes,
-        dev_reads_2d,
+        dev_reads_corrected_2d,
         solids,
     )
 
@@ -134,7 +135,7 @@ def remote_core_correction(
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return dev_reads_2d.copy_to_host(), solids.copy_to_host()
+    return dev_reads_corrected_2d.copy_to_host(), solids.copy_to_host()
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -294,15 +295,14 @@ if __name__ == "__main__":
 
     kmer_extract_start_time = time.perf_counter()
     gpu_extractor = KmerExtractorGPU.remote(kmer_len)
-
     kmer_occurences = ray.get(
-        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 3500000)
+        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 1000000)
     )
     offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
-    reads_1d = ray.get(
-        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 3500000)
+    reads_2d = ray.get(
+        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 1000000)
     )
-    print(reads_1d)
+    print(reads_2d)
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
@@ -310,7 +310,10 @@ if __name__ == "__main__":
     print(
         f"number of reads is equal to number of rows in the offset:{offsets.shape[0]}"
     )
-
+    offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
+    offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
+    max_segment_length = offsets_df["length"].max()
+    print(f"max length is {max_segment_length}")
     # remove unique kmers
     non_unique_kmers = kmer_occurences[kmer_occurences["multiplicity"] > 1]
     print("Done removing unique kmers")
@@ -320,7 +323,7 @@ if __name__ == "__main__":
 
     print(f"Non unique kmers {non_unique_kmers}")
     cutoff_threshold = calculatecutoff_threshold(
-        occurence_data, max_occurence // 2
+        occurence_data, max_occurence
     )
     # cutoff_threshold = 10
     print(f"cutoff threshold: {cutoff_threshold}")
@@ -340,7 +343,7 @@ if __name__ == "__main__":
     sorted_by_occurence = kmer_np[kmer_np[:, 1].argsort()[::-1]]
     sort_end_time = time.perf_counter()
 
-    print(f"reads 1d length: {len(reads_1d)}")
+    print(f"reads 1d length: {len(reads_2d)}")
     # sorting the kmer spectrum in order to make the search faster with binary search
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(f"sorted by occurence {sorted_by_occurence[:100]}")
@@ -357,10 +360,10 @@ if __name__ == "__main__":
 
     corrected_reads_array, solids_host = ray.get(
         remote_core_correction.remote(
-            sorted_kmer_np_reference, reads_1d, offsets, kmer_len, last_end_idx, 1000000
+            sorted_kmer_np_reference, reads_2d, offsets, kmer_len, last_end_idx, 1000000
         )
     )
-    print(corrected_reads_array)
+    print(f"corrected reads array {corrected_reads_array}" )
     print(corrected_reads_array.dtype)
 
     back_sequence_start_time = time.perf_counter()

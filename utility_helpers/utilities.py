@@ -71,7 +71,7 @@ def test_return_value(val, iter, bases):
 
 @cuda.jit()
 def reverse_comp_kmer(dev_kmers, kmer_length):
-    MAX_KMER_LEN = 17
+    MAX_KMER_LEN = 18
     threadIdx = cuda.grid(1)
     if threadIdx < dev_kmers.shape[0]:
         rep = cuda.local.array(MAX_KMER_LEN, dtype="uint8")
