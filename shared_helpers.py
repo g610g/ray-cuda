@@ -306,7 +306,6 @@ def successor(
     return True
 
 
-# problematic son of a btch
 @cuda.jit(device=True)
 def predeccessor_v2(
     kmer_length,
@@ -392,10 +391,10 @@ def select_mutations(
 ):
     # calculate the pos value considering rev_comp flag
     num_bases = 0
-    base_index = pos
     if rev_comp and pos < kmer_len:
         base_index = (kmer_len - 1) - pos
-
+    else:
+        base_index = pos
     original_base = km[base_index]
     copy_kmer(aux_km, km, 0, kmer_len)
 
@@ -420,10 +419,10 @@ def select_mutations(
             candidate = transform_to_key(aux_km2, kmer_len)
             if in_spectrum(spectrum, candidate):
                 # use complement of selected base if rev comp flag is active
-                base = bases[idx]
                 if rev_comp:
                     base = complement(bases[idx])
-
+                else:
+                    base = bases[idx]
                 # add range restriction
                 if base > 0 and base < 5:
                     selected_bases[num_bases][0] = base

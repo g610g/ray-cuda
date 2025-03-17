@@ -831,7 +831,7 @@ def one_sided_v2(
                         num_corrections += 1
                         # revert back reads if corrections exceed max_corrections
                         if num_corrections > max_corrections:
-                            for pos in range(last_position, target_pos + 1):
+                            for pos in range(num_corrections):
                                 corrections[corrections_made - 1][0] = 0
                                 corrections[corrections_made - 1][1] = 0
                                 corrections_made -= 1
@@ -854,7 +854,7 @@ def one_sided_v2(
         lkmer_idx = region_indices[region][0]
         if lkmer_idx > 0:
 
-            copy_kmer(local_read_aux, encoded_bases, 0, seq_len)
+            # copy_kmer(local_read_aux, encoded_bases, 0, seq_len)
             last_position = right_orientation_idx
 
             num_corrections = 0
@@ -933,7 +933,7 @@ def one_sided_v2(
 
                             # revert kmer back if corrections done exceeds max_corrections
                             if num_corrections > max_corrections:
-                                for base_idx in range(pos, last_position + 1):
+                                for base_idx in range(num_corrections):
                                     corrections[corrections_made - 1][0] = 0
                                     corrections[corrections_made - 1][1] = 0
                                     # aux_corrections[base_idx] = 0
@@ -948,7 +948,6 @@ def one_sided_v2(
                         continue
 
                     # the correction for the current base is done == False
-                    pos -= 1
                     break
                 # endif not in_spectrum
                 pos -= 1
