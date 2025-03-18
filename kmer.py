@@ -227,7 +227,7 @@ class KmerExtractorGPU:
         )
         # allocating gpu threads
         # bpg = math.ceil(offsets.shape[0] // tpb)
-        tpb = 512
+        tpb = 256
         bpg = (self.offsets.shape[0] + tpb) // tpb
 
         one_sided_kernel[bpg, tpb](

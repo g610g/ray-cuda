@@ -225,11 +225,11 @@ def correct_two_sided(
         solids[i] = -1
 
     # NOTE:: an encoded version of the current read
-    # copy_kmer(encoded_bases, local_read, 0, seqlen)
-    # encode_bases(encoded_bases, seqlen)
+    copy_kmer(encoded_bases, local_read, 0, seqlen)
+    encode_bases(encoded_bases, seqlen)
 
     identify_solid_bases(
-        local_read, kmer_len, kmer_spectrum, solids, km, size, aux_kmer
+        encoded_bases, kmer_len, kmer_spectrum, solids, km, size, aux_kmer
     )
     # check whether solids array does not contain -1, return 0 if yes
     if all_solid_base(solids, seqlen):
@@ -244,15 +244,15 @@ def correct_two_sided(
             continue
         lpos = 0
         # right kmer
-        copy_kmer(km, local_read, ipos, ipos + kmer_len)
+        copy_kmer(km, encoded_bases, ipos, ipos + kmer_len)
 
         # left kmer
         if ipos >= kmer_len:
-            copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
+            copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
             lpos = klen_idx
 
         else:
-            copy_kmer(aux_kmer, local_read, 0, kmer_len)
+            copy_kmer(aux_kmer, encoded_bases, 0, kmer_len)
             lpos = ipos
 
         # checks for reverse complement and checking lowest canonical representation
@@ -323,10 +323,10 @@ def correct_two_sided(
     for ipos in range(size + 1, seqlen):
 
         # left kmer
-        copy_kmer(aux_kmer, local_read, ipos - klen_idx, ipos + 1)
+        copy_kmer(aux_kmer, encoded_bases, ipos - klen_idx, ipos + 1)
 
         # right kmer
-        copy_kmer(km, local_read, size, seqlen)
+        copy_kmer(km, encoded_bases, size, seqlen)
 
         if solids[ipos] == 1:
             continue
@@ -417,8 +417,8 @@ def one_sided_kernel(
         region_indices = cuda.local.array((20, 3), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
         selected_bases = cuda.local.array((6, 2), dtype="uint64")
-        lpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
-        rpossible_base_mutations = cuda.local.array((4, 2), dtype="uint64")
+        lpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
+        rpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")

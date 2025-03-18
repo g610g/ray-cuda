@@ -1,6 +1,7 @@
 #![feature(test)]
 extern crate test;
-use bio::io::fastq::{self, Record};
+//use bio::io::fastq::{self, Record};
+use seq_io::fastq::{Reader, Record};
 use bloomfilter::Bloom;
 use numpy::ndarray::{Array2, ArrayD, ArrayView2};
 use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
@@ -107,7 +108,7 @@ pub mod functionalities {
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
     //m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
-    m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
+    //m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
 }
@@ -164,8 +165,8 @@ fn generate_kmers(read: &str, kmer_length: &usize) -> Vec<String> {
         .collect()
 }
 fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str> {
-    match fastq::Reader::from_file(file_path) {
-        Ok(reader) => {
+    match Reader::from_path(file_path) {
+        Ok(mut reader) => {
             let mut read_vector = vec![];
             for result in reader.records() {
                 if let Ok(record) = result {
@@ -241,11 +242,12 @@ fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str>
 //}
 //creates python bindings that will be used for parsing fastq files
 #[pyfunction]
-fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
+fn parse_fastq_file(file_path: String) -> PyResult<()> {
     match generate_string_reads(file_path) {
         Ok(result) => Ok(result),
         Err(_) => Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
-    }
+    };
+    Ok(())
 }
 //#[pyfunction]
 //fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
@@ -256,67 +258,67 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
 //    };
 //    //let string_reads = records.
 //}
-#[pyfunction]
-fn write_fastq_file(
-    dst_filename: String,
-    src_filename: String,
-    matrix: &Bound<'_, PyArray2<u8>>,
-) -> PyResult<()> {
-    let mut writer = match fastq::Writer::to_file(dst_filename) {
-        Ok(writer) => writer,
-        Err(_) => {
-            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
-        }
-    };
-
-    let reader = match fastq::Reader::from_file(src_filename) {
-        Ok(reader) => reader,
-        Err(_) => {
-            return Err(PyErr::new::<PyTypeError, _>(
-                "Destination file name cannot be located",
-            ));
-        }
-    };
-
-    let np_matrix = unsafe { matrix.as_array() };
-    let result: Result<Vec<String>, _> = np_matrix
-        .rows()
-        .into_iter()
-        .map(|row| {
-            let mut vector_row = row.to_vec();
-            byte_to_string(&mut vector_row)
-        })
-        .collect();
-
-    match result {
-        Ok(rows_as_strings) => {
-            for (record, row) in reader.records().zip(rows_as_strings.iter()) {
-                if let Ok(record) = record {
-                    let new_record = Record::with_attrs(
-                        record.id(),
-                        record.desc(),
-                        row.as_bytes(),
-                        record.qual(),
-                    );
-
-                    if let Err(_) = writer.write_record(&new_record) {
-                        return Err(PyErr::new::<PyTypeError, _>(
-                            "Error writing new record to the file",
-                        ));
-                    }
-                } else {
-                    return Err(PyErr::new::<PyTypeError, _>(
-                        "Something went wrong during extracting record",
-                    ));
-                }
-            }
-        }
-        Err(e) => {
-            return Err(e);
-        }
-    }
-    Ok(())
-}
+//#[pyfunction]
+//fn write_fastq_file(
+//    dst_filename: String,
+//    src_filename: String,
+//    matrix: &Bound<'_, PyArray2<u8>>,
+//) -> PyResult<()> {
+//    let mut writer = match fastq::Writer::to_file(dst_filename) {
+//        Ok(writer) => writer,
+//        Err(_) => {
+//            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
+//        }
+//    };
+//
+//    let reader = match fastq::Reader::from_file(src_filename) {
+//        Ok(reader) => reader,
+//        Err(_) => {
+//            return Err(PyErr::new::<PyTypeError, _>(
+//                "Destination file name cannot be located",
+//            ));
+//        }
+//    };
+//
+//    let np_matrix = unsafe { matrix.as_array() };
+//    let result: Result<Vec<String>, _> = np_matrix
+//        .rows()
+//        .into_iter()
+//        .map(|row| {
+//            let mut vector_row = row.to_vec();
+//            byte_to_string(&mut vector_row)
+//        })
+//        .collect();
+//
+//    match result {
+//        Ok(rows_as_strings) => {
+//            for (record, row) in reader.records().zip(rows_as_strings.iter()) {
+//                if let Ok(record) = record {
+//                    let new_record = Record::with_attrs(
+//                        record.id(),
+//                        record.desc(),
+//                        row.as_bytes(),
+//                        record.qual(),
+//                    );
+//
+//                    if let Err(_) = writer.write_record(&new_record) {
+//                        return Err(PyErr::new::<PyTypeError, _>(
+//                            "Error writing new record to the file",
+//                        ));
+//                    }
+//                } else {
+//                    return Err(PyErr::new::<PyTypeError, _>(
+//                        "Something went wrong during extracting record",
+//                    ));
+//                }
+//            }
+//        }
+//        Err(e) => {
+//            return Err(e);
+//        }
+//    }
+//    Ok(())
+//}
 
 //this function unwraps for now. Add better error handling
 fn byte_to_string(byte_array: &mut Vec<u8>) -> Result<String, PyErr> {

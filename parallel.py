@@ -433,9 +433,7 @@ if __name__ == "__main__":
     #     ]
     # )
     back_sequence_end_time = time.perf_counter()
-    print(
-        f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}"
-    )
+
     write_file_starttime = time.perf_counter()
 
     filename = get_filename_without_extension(sys.argv[1])
