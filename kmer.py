@@ -5,8 +5,10 @@ import math
 import numpy as np
 import cudf
 from numba import cuda
-from shared_helpers import reverse_comp
+from shared_core_correction import one_sided_kernel
+from shared_helpers import  back_sequence_kernel
 from utility_helpers.utilities import reverse_comp_kmer
+one_sided_kernel
 
 
 @ray.remote(num_gpus=1, num_cpus=4)
@@ -31,6 +33,7 @@ class KmerExtractorGPU:
         self.reads = reads
         self.spectrum = []
         self.offsets = []
+        self.corrected_reads = []
 
     def update_spectrum(self, spectrum):
         self.spectrum = spectrum
@@ -241,8 +244,33 @@ class KmerExtractorGPU:
         end.synchronize()
         transfer_time = cuda.event_elapsed_time(start, end)
         print(f"execution time of the kernel:  {transfer_time} ms")
-
+        self.corrected_reads = dev_reads_corrected_2d.copy_to_host()
         cuda.profile_stop()
+    def back_to_sequence_helper(self):
+        # find reads max length
+        offsets_df = cudf.DataFrame({"start": self.offsets[:, 0], "end": self.offsets[:, 1]})
+        offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
+        max_segment_length = offsets_df["length"].max()
+        print(f"max segment length: {max_segment_length}")
+        cuda.profile_start()
+        start = cuda.event()
+        end = cuda.event()
+        start.record()
+
+        dev_reads = cuda.to_device(self.corrected_reads)
+        dev_offsets = cuda.to_device(self.offsets)
+        tpb = 1024
+        bpg = (self.offsets.shape[0] + tpb) // tpb
+
+        back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets)
+
+        end.record()
+        end.synchronize()
+        transfer_time = cuda.event_elapsed_time(start, end)
+        print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
+        cuda.profile_stop()
+
+        return dev_reads.copy_to_host()
 
 
 # @ray.remote(num_gpus=0.5, num_cpus=1)

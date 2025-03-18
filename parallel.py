@@ -404,47 +404,39 @@ if __name__ == "__main__":
     correction_result = []
     last_end_idx = 0
     ray.get([kmer_actor.update_spectrum.remote(sorted_kmer_np_reference) for kmer_actor in kmer_actors])
-
-    # corrected_reads_array, solids_host = ray.get(
-    #     remote_core_correction.remote(
-    #         sorted_kmer_np_reference, reads_2d, offsets, kmer_len, last_end_idx, 1000000
-    #     )
-    # )
-    print(f"corrected reads array {corrected_reads_array}")
-    print(corrected_reads_array.dtype)
-
+    ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
     back_sequence_start_time = time.perf_counter()
-    corrected_2d_reads_array = ray.get(
-        back_to_sequence_helper.remote(corrected_reads_array, offsets)
-    )
-    print(solids_host[1])
-    print(solids_host[2])
-    ray.get(
-        [
-            check_solids.remote(solids_host[idx : idx + batch_size], 100)
-            for idx in range(0, len(solids_host), batch_size)
-        ]
-    )
-    ray.get(
-        [
-            calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
-            for idx in range(0, len(solids_host), batch_size)
-        ]
-    )
-    ray.get(
-        [
-            check_uncorrected.remote(solids_host[idx : idx + batch_size])
-            for idx in range(0, len(solids_host), batch_size)
-        ]
-    )
+    corrected_reads = ray.get([kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors])
+    corrected_2d_reads_array = np.concatenate(corrected_reads)
+    print(f"corrected reads array {corrected_2d_reads_array}")
+    print(corrected_2d_reads_array.dtype)
+
+
+    # print(solids_host[1])
+    # print(solids_host[2])
+    # ray.get(
+    #     [
+    #         check_solids.remote(solids_host[idx : idx + batch_size], 100)
+    #         for idx in range(0, len(solids_host), batch_size)
+    #     ]
+    # )
+    # ray.get(
+    #     [
+    #         calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
+    #         for idx in range(0, len(solids_host), batch_size)
+    #     ]
+    # )
+    # ray.get(
+    #     [
+    #         check_uncorrected.remote(solids_host[idx : idx + batch_size])
+    #         for idx in range(0, len(solids_host), batch_size)
+    #     ]
+    # )
     back_sequence_end_time = time.perf_counter()
     print(
         f"time it takes to turn reads back: {back_sequence_end_time - back_sequence_start_time}"
     )
-
     write_file_starttime = time.perf_counter()
-    print(corrected_2d_reads_array)
-    print(len(corrected_2d_reads_array))
 
     filename = get_filename_without_extension(sys.argv[1])
     output_filename = filename + "GPUMUSKET.fastq"
