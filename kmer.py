@@ -11,11 +11,29 @@ from utility_helpers.utilities import reverse_comp_kmer
 
 @ray.remote(num_gpus=1, num_cpus=1)
 class KmerExtractorGPU:
-    def __init__(self, kmer_length):
+    def __init__(self, kmer_length, reads):
         self.kmer_length = kmer_length
         self.translation_table = str.maketrans(
-            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5", "R": "5", "M": "5", "K": "5", "S": "5", "W": "5", "Y": "5"}
+            {
+                "A": "1",
+                "C": "2",
+                "G": "3",
+                "T": "4",
+                "N": "5",
+                "R": "5",
+                "M": "5",
+                "K": "5",
+                "S": "5",
+                "W": "5",
+                "Y": "5",
+            }
         )
+        self.reads = reads
+        self.spectrum = []
+        self.offsets = []
+
+    def update_spectrum(self, spectrum):
+        self.spectrum = spectrum
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -23,8 +41,8 @@ class KmerExtractorGPU:
         exploded_kmers = kmers.explode()
         return exploded_kmers.value_counts()
 
-    def get_offsets(self, reads):
-        read_s = cudf.Series(reads, name="reads")
+    def get_offsets(self):
+        read_s = cudf.Series(self.reads, name="reads")
         read_df = read_s.to_frame()
         str_lens = read_df["reads"].str.len()
         end_indices = str_lens.cumsum()
@@ -32,36 +50,34 @@ class KmerExtractorGPU:
         offsets = cudf.DataFrame(
             {"start_indices": start_indices, "end_indices": end_indices}
         ).to_numpy()
-        return offsets
+        self.offsets = offsets
+        return
 
-    def transform_reads_2_1d_batch(self, reads, batch_size):
+    def transform_reads_2_1d_batch(self, batch_size):
         result = []
-        read_s = cudf.Series(reads, name="reads")
+        read_s = cudf.Series(self.reads, name="reads")
         max_length = read_s.str.len().max()
 
-        for i in range(0, len(reads), batch_size):
-            read_s = cudf.Series(reads[i : i + batch_size], name="reads")
+        for i in range(0, len(self.reads), batch_size):
+            read_s = cudf.Series(self.reads[i : i + batch_size], name="reads")
             padded_reads = read_s.str.pad(width=max_length, side="right", fillchar="0")
             transformed = (
-                padded_reads
-                    .str.findall(".")
-                    .explode() 
-                    .str.translate(self.translation_table)
-                    .astype("uint8")
+                padded_reads.str.findall(".")
+                .explode()
+                .str.translate(self.translation_table)
+                .astype("uint8")
             )
-            result.append(
-                transformed.to_numpy().reshape(len(read_s), max_length)
-            )
+            result.append(transformed.to_numpy().reshape(len(read_s), max_length))
 
         concatenated = np.concatenate(result).astype("uint8")
-        print(concatenated)
+        # print(concatenated)
         return concatenated
 
-    def transform_reads_2_1d(self, reads, batch_size):
-        if len(reads) > batch_size:
-            return self.transform_reads_2_1d_batch(reads, batch_size)
-
-        read_s = cudf.Series(reads, name="reads")
+    def transform_reads_2_1d(self, batch_size):
+        if len(self.reads) > batch_size:
+            self.reads = self.transform_reads_2_1d_batch(batch_size)
+            return
+        read_s = cudf.Series(self.reads, name="reads")
         max_length = read_s.str.len().max()
         padded_reads = read_s.str.pad(width=max_length, side="right", fillchar="0")
         transformed = (
@@ -70,7 +86,7 @@ class KmerExtractorGPU:
             .str.translate(self.translation_table)
             .astype("uint8")
         )
-        return transformed.to_numpy().reshape(len(reads), max_length)
+        self.reads = transformed.to_numpy().reshape(len(self.reads), max_length)
 
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
@@ -91,15 +107,15 @@ class KmerExtractorGPU:
         return [kmers, dev_kmer_array.copy_to_host()]
 
     # store the dataframe as state of this worker to be used by downstream tasks
-    def calculate_kmers_multiplicity_batch(self, reads, batch_size):
+    def calculate_kmers_multiplicity_batch(self, batch_size):
         all_results = []
-        for i in range(0, len(reads), batch_size):
+        for i in range(0, len(self.reads), batch_size):
 
-            read_s = cudf.Series(reads[i : i + batch_size], name="reads")
+            read_s = cudf.Series(self.reads[i : i + batch_size], name="reads")
             read_df = read_s.to_frame()
 
             replaced_df = read_df["reads"].str.replace(r"[NWKSYMR]", "A")
-            print(replaced_df)
+            # print(replaced_df)
             read_df["translated"] = replaced_df.str.translate(self.translation_table)
             ngram_kmers = read_df["translated"].str.character_ngrams(
                 self.kmer_length, True
@@ -135,15 +151,15 @@ class KmerExtractorGPU:
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
         print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers
+        return final_kmers.to_numpy().astype("uint64")
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
-    def calculate_kmers_multiplicity(self, reads, batch_size):
+    def calculate_kmers_multiplicity(self, batch_size):
 
-        if len(reads) > batch_size:
-            return self.calculate_kmers_multiplicity_batch(reads, batch_size)
+        if len(self.reads) > batch_size:
+            return self.calculate_kmers_multiplicity_batch(batch_size)
 
-        read_s = cudf.Series(reads, name="reads")
+        read_s = cudf.Series(self.reads, name="reads")
         read_df = read_s.to_frame()
 
         replaced_df = read_df["reads"].str.replace(r"[NWKSYMR]", "A")
@@ -172,7 +188,52 @@ class KmerExtractorGPU:
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
         print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers
+        return final_kmers.to_numpy()
+
+    def correct_reads(self):
+        cuda.profile_start()
+        start = cuda.event()
+        end = cuda.event()
+        start.record()
+        print(f"offset shape: {self.offsets.shape}")
+        print(f"offset dtype: {self.offsets.dtype}")
+        print(f"reads dtype: {self.reads.dtype}")
+        print(f"Kmer spectrum: {self.spectrum}")
+        # transfering necessary data into GPU side
+        MAX_READ_LENGTH = 400
+        dev_reads_2d = cuda.to_device(self.reads)
+        dev_kmer_spectrum = cuda.to_device(self.spectrum)
+        dev_offsets = cuda.to_device(self.offsets)
+        max_votes = cuda.to_device(
+            np.zeros((self.offsets.shape[0], 100), dtype="int32")
+        )
+        dev_reads_corrected_2d = cuda.to_device(
+            np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
+        )
+        solids = cuda.to_device(
+            np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="int8")
+        )
+        # allocating gpu threads
+        # bpg = math.ceil(offsets.shape[0] // tpb)
+        tpb = 512
+        bpg = (self.offsets.shape[0] + tpb) // tpb
+
+        one_sided_kernel[bpg, tpb](
+            dev_kmer_spectrum,
+            dev_reads_2d,
+            dev_offsets,
+            self.kmer_length,
+            max_votes,
+            dev_reads_corrected_2d,
+            solids,
+        )
+
+        end.record()
+        end.synchronize()
+        transfer_time = cuda.event_elapsed_time(start, end)
+        print(f"execution time of the kernel:  {transfer_time} ms")
+
+        cuda.profile_stop()
 
 
 # todo:refactor

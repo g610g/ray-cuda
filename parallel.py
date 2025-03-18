@@ -4,6 +4,7 @@ import sys
 import cudf
 import numpy as np
 import fastq_parser
+import kmer
 import ray
 from Bio import Seq
 from shared_core_correction import *
@@ -112,7 +113,9 @@ def remote_core_correction(
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
     max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
-    dev_reads_corrected_2d = cuda.to_device(np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="uint8"))
+    dev_reads_corrected_2d = cuda.to_device(
+        np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
+    )
     solids = cuda.to_device(np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="int8"))
     # allocating gpu threads
     # bpg = math.ceil(offsets.shape[0] // tpb)
@@ -226,12 +229,12 @@ def ping_resources():
 
 
 @cuda.jit()
-def kernel_test(dev_arr,dev_len):
+def kernel_test(dev_arr, dev_len):
     threadIdx = cuda.grid(1)
     if threadIdx < dev_arr.shape[0]:
-        region_indices = cuda.local.array((10, 3), dtype='uint32')
-        key = cuda.local.array(3, dtype='uint32')
-         # Initialize the array elements individually
+        region_indices = cuda.local.array((10, 3), dtype="uint32")
+        key = cuda.local.array(3, dtype="uint32")
+        # Initialize the array elements individually
         # region_indices[3, 0] = 1
         # region_indices[3, 1] = 3
         # region_indices[3, 2] = 2
@@ -253,6 +256,17 @@ def kernel_test(dev_arr,dev_len):
         #     for j in range(3):
         #         dev_arr[threadIdx][i][j] = region_indices[i][j]
         dev_len[threadIdx][0] = len(region_indices) // 2
+
+
+# NOTE:: we will create dataframe and group them then we return the grouped kmers that will be stored for each gpus
+@ray.remote(num_gpus=1, num_cpus=1)
+def combine_kmers(kmers):
+    kmers = cuda.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
+    grouped_kmers = kmers.groupby("canonical").sum().reset_index()
+    print(grouped_kmers)
+    return grouped_kmers
+
+
 @ray.remote(num_gpus=1, num_cpus=1)
 def test():
     arr = np.zeros((10, 10, 3), dtype="uint32")
@@ -265,6 +279,7 @@ def test():
     kernel_test[bpg, tpb](dev_arr, dev_len)
     return dev_len.copy_to_host()
 
+
 if __name__ == "__main__":
     print(ray.get(test.remote()))
     start_time = time.perf_counter()
@@ -273,7 +288,9 @@ if __name__ == "__main__":
         print(usage)
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
-    kmer_len = 17
+    gpus_detected = int(ray.cluster_resources()["GPU"])
+    print(f"number of gpus detected: {gpus_detected}")
+    kmer_len = 16
     parse_reads_starttime = time.perf_counter()
     reads = fastq_parser.parse_fastq_file(sys.argv[1])
     parse_reads_endtime = time.perf_counter()
@@ -281,7 +298,7 @@ if __name__ == "__main__":
         f"Time it takes to parse reads and kmers {parse_reads_endtime - parse_reads_starttime}"
     )
     reads_refer_starttime = time.perf_counter()
-    reads_reference = ray.put(reads)
+    # reads_reference = ray.put(reads)
     reads_refer_endtime = time.perf_counter()
     print(
         f"time it takes to put reads into object store: {reads_refer_endtime - reads_refer_starttime}"
@@ -292,24 +309,54 @@ if __name__ == "__main__":
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
     print(f"Length of reads: {len(reads)}")
-
     kmer_extract_start_time = time.perf_counter()
-    gpu_extractor = KmerExtractorGPU.remote(kmer_len)
-    kmer_occurences = ray.get(
-        gpu_extractor.calculate_kmers_multiplicity.remote(reads_reference, 1000000)
-    )
-    offsets = ray.get(gpu_extractor.get_offsets.remote(reads_reference))
-    reads_2d = ray.get(
-        gpu_extractor.transform_reads_2_1d.remote(reads_reference, 1000000)
-    )
-    print(reads_2d)
+    kmer_actors = []
+    reads_len = len(reads)
+    reads_per_gpu = reads_len // gpus_detected
+    remainder = reads_len % gpus_detected
+    start = 0
+    start_end = []
+    for i in range(gpus_detected):
+        extra = 1 if i < remainder else 0  # Distribute remainder to first GPUs
+        end = start + reads_per_gpu + extra
+        start_end.append([start, end, end - start])
+        start = end
+
+    print(reads_len)
+    print(start_end)
+    for bound in start_end:
+        kmer_actors.append(
+            KmerExtractorGPU.remote(kmer_len, reads[bound[0] : bound[1]])
+        )
+        print(bound)
+
+    kmer_extract_references = []
+    offsets_extract_references = []
+    reads_2d_references = []
+    for kmer_actor in kmer_actors:
+        kmer_extract_references.append(
+            kmer_actor.calculate_kmers_multiplicity.remote(1000000)
+        )
+    kmers = ray.get(kmer_extract_references)
+    # print(kmers)
+    # for kmer_actor in kmer_actors:
+    #     offsets_extract_references.append(kmer_actor.get_offsets.remote())
+    #
+    # ray.get(offsets_extract_references)
+    #
+    # for kmer_actor in kmer_actors:
+    #     reads_2d_references.append(kmer_actor.transform_reads_2_1d.remote(1000000))
+    #
+    # ray.get(reads_2d_references)
+
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
     )
-    print(
-        f"number of reads is equal to number of rows in the offset:{offsets.shape[0]}"
-    )
+    # print(
+    #     f"number of reads is equal to number of rows in the offset:{offsets.shape[0]}"
+    # )
+
     offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
     offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
     max_segment_length = offsets_df["length"].max()
@@ -322,9 +369,7 @@ if __name__ == "__main__":
     print(f"max occurence data: {max_occurence}")
 
     print(f"Non unique kmers {non_unique_kmers}")
-    cutoff_threshold = calculatecutoff_threshold(
-        occurence_data, max_occurence
-    )
+    cutoff_threshold = calculatecutoff_threshold(occurence_data, max_occurence)
     # cutoff_threshold = 10
     print(f"cutoff threshold: {cutoff_threshold}")
 
@@ -350,8 +395,7 @@ if __name__ == "__main__":
     print(f"sorted by kmer {sorted_kmer_np[:100]}")
     print(f"offsets {offsets}")
 
-
-    #NOTE::correcting by batch is not used currently
+    # NOTE::correcting by batch is not used currently
     # we will try correcting by batch
     sorted_kmer_np_reference = ray.put(sorted_kmer_np)
     correction_batch_size = 1000000
@@ -363,7 +407,7 @@ if __name__ == "__main__":
             sorted_kmer_np_reference, reads_2d, offsets, kmer_len, last_end_idx, 1000000
         )
     )
-    print(f"corrected reads array {corrected_reads_array}" )
+    print(f"corrected reads array {corrected_reads_array}")
     print(corrected_reads_array.dtype)
 
     back_sequence_start_time = time.perf_counter()
@@ -380,7 +424,7 @@ if __name__ == "__main__":
     )
     ray.get(
         [
-           calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
+            calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
             for idx in range(0, len(solids_host), batch_size)
         ]
     )
