@@ -259,9 +259,10 @@ def kernel_test(dev_arr, dev_len):
 
 
 # NOTE:: we will create dataframe and group them then we return the grouped kmers that will be stored for each gpus
-@ray.remote(num_gpus=1, num_cpus=1)
+@ray.remote(num_gpus=0.5, num_cpus=1)
 def combine_kmers(kmers):
-    kmers = cuda.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
+    kmers = np.concatenate(kmers, axis=0)
+    kmers = cudf.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
     grouped_kmers = kmers.groupby("canonical").sum().reset_index()
     print(grouped_kmers)
     return grouped_kmers
@@ -335,32 +336,34 @@ if __name__ == "__main__":
     reads_2d_references = []
     for kmer_actor in kmer_actors:
         kmer_extract_references.append(
-            kmer_actor.calculate_kmers_multiplicity.remote(1000000)
+            kmer_actor.calculate_kmers_multiplicity.remote(100000)
         )
     kmers = ray.get(kmer_extract_references)
     # print(kmers)
-    # for kmer_actor in kmer_actors:
-    #     offsets_extract_references.append(kmer_actor.get_offsets.remote())
-    #
-    # ray.get(offsets_extract_references)
-    #
-    # for kmer_actor in kmer_actors:
-    #     reads_2d_references.append(kmer_actor.transform_reads_2_1d.remote(1000000))
-    #
-    # ray.get(reads_2d_references)
+    for kmer_actor in kmer_actors:
+        offsets_extract_references.append(kmer_actor.get_offsets.remote())
 
+    ray.get(offsets_extract_references)
+
+    for kmer_actor in kmer_actors:
+        reads_2d_references.append(kmer_actor.transform_reads_2_1d.remote(100000))
+
+    ray.get(reads_2d_references)
+    kmer_occurences = ray.get(kmer_actors[0].combine_kmers.remote(kmers))
+    print(kmer_occurences )
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
     )
+
     # print(
     #     f"number of reads is equal to number of rows in the offset:{offsets.shape[0]}"
     # )
 
-    offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
-    offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
-    max_segment_length = offsets_df["length"].max()
-    print(f"max length is {max_segment_length}")
+    # offsets_df = cudf.DataFrame({"start": offsets[:, 0], "end": offsets[:, 1]})
+    # offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
+    # max_segment_length = offsets_df["length"].max()
+    # print(f"max length is {max_segment_length}")
     # remove unique kmers
     non_unique_kmers = kmer_occurences[kmer_occurences["multiplicity"] > 1]
     print("Done removing unique kmers")
@@ -373,7 +376,7 @@ if __name__ == "__main__":
     # cutoff_threshold = 10
     print(f"cutoff threshold: {cutoff_threshold}")
 
-    batch_size = len(offsets) // cpus_detected
+    # batch_size = len(offsets) // cpus_detected
     filtered_kmer_df = non_unique_kmers[
         non_unique_kmers["multiplicity"] >= cutoff_threshold
     ]
@@ -388,12 +391,11 @@ if __name__ == "__main__":
     sorted_by_occurence = kmer_np[kmer_np[:, 1].argsort()[::-1]]
     sort_end_time = time.perf_counter()
 
-    print(f"reads 1d length: {len(reads_2d)}")
+    # print(f"reads 1d length: {len(reads_2d)}")
     # sorting the kmer spectrum in order to make the search faster with binary search
-    print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
     print(f"sorted by occurence {sorted_by_occurence[:100]}")
     print(f"sorted by kmer {sorted_kmer_np[:100]}")
-    print(f"offsets {offsets}")
+    print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
 
     # NOTE::correcting by batch is not used currently
     # we will try correcting by batch
@@ -401,12 +403,13 @@ if __name__ == "__main__":
     correction_batch_size = 1000000
     correction_result = []
     last_end_idx = 0
+    ray.get([kmer_actor.update_spectrum.remote(sorted_kmer_np_reference) for kmer_actor in kmer_actors])
 
-    corrected_reads_array, solids_host = ray.get(
-        remote_core_correction.remote(
-            sorted_kmer_np_reference, reads_2d, offsets, kmer_len, last_end_idx, 1000000
-        )
-    )
+    # corrected_reads_array, solids_host = ray.get(
+    #     remote_core_correction.remote(
+    #         sorted_kmer_np_reference, reads_2d, offsets, kmer_len, last_end_idx, 1000000
+    #     )
+    # )
     print(f"corrected reads array {corrected_reads_array}")
     print(corrected_reads_array.dtype)
 

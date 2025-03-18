@@ -9,7 +9,7 @@ from shared_helpers import reverse_comp
 from utility_helpers.utilities import reverse_comp_kmer
 
 
-@ray.remote(num_gpus=1, num_cpus=1)
+@ray.remote(num_gpus=1, num_cpus=4)
 class KmerExtractorGPU:
     def __init__(self, kmer_length, reads):
         self.kmer_length = kmer_length
@@ -133,12 +133,12 @@ class KmerExtractorGPU:
             .sum()
             .reset_index()
         )
-        print(concat_result)
+        # print(concat_result)
         concat_result.columns = ["translated", "multiplicity"]
         concat_result["multiplicity"] = concat_result["multiplicity"].clip(upper=255)
-        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        print(f"final result shape is: {concat_result.shape}")
-        print(f"Kmers before calculating canonical kmers: {concat_result}")
+        # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        # print(f"final result shape is: {concat_result.shape}")
+        # print(f"Kmers before calculating canonical kmers: {concat_result}")
         [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(concat_result)
 
         final_kmers = (
@@ -150,10 +150,11 @@ class KmerExtractorGPU:
             .reset_index()
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
-        print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers.to_numpy().astype("uint64")
+        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers.to_numpy().astype("uint64", copy=False)
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
+
     def calculate_kmers_multiplicity(self, batch_size):
 
         if len(self.reads) > batch_size:
@@ -174,7 +175,7 @@ class KmerExtractorGPU:
 
         result_frame.columns = ["translated", "multiplicity"]
         print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        print(f"Kmers before calculating canonical kmers: {result_frame}")
+        # print(f"Kmers before calculating canonical kmers: {result_frame}")
         # we do this by batch
         [kmers_np, _] = self.check_rev_comp_kmer(result_frame)
 
@@ -187,9 +188,17 @@ class KmerExtractorGPU:
             .reset_index()
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
-        print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
         return final_kmers.to_numpy()
 
+    def combine_kmers(self, kmers):
+        kmers = np.concatenate(kmers)
+        print(f"Kmers within combine: {kmers}")
+        kmers = cudf.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
+        print(f"Kmer dataframe within combine:{kmers}")
+        grouped_kmers = kmers.groupby("canonical").sum().reset_index()
+        grouped_kmers['multiplicity'] = grouped_kmers['multiplicity'].clip(upper=255)
+        return grouped_kmers
     def correct_reads(self):
         cuda.profile_start()
         start = cuda.event()
@@ -236,7 +245,19 @@ class KmerExtractorGPU:
         cuda.profile_stop()
 
 
-# todo:refactor
+# @ray.remote(num_gpus=0.5, num_cpus=1)
+# class GPUActor:
+#     def __init__(self, gpuExtractor):
+#         self.spectrum = []
+#         self.gpuExtractor = gpuExtractor
+#     def run(self):
+#         spectrumRef = self.gpuExtractor.calculate_kmers_multiplicity.remote(150000)
+#         offsetsRef = self.gpuExtractor.get_offsets.remote()
+#         transformRef = self.gpuExtractor.transform_reads_2_1d.remote(150000)
+#         ray.get(offsetsRef) 
+#         ray.get(transformRef) 
+#         return ray.get(spectrumRef)
+# TODO::refactor
 def calculatecutoff_threshold(occurence_data, bin):
 
     hist_vals, bin_edges = np.histogram(occurence_data, bins=int(bin))
