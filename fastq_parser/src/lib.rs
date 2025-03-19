@@ -1,23 +1,19 @@
 #![feature(test)]
 extern crate test;
 //use bio::io::fastq::{self, Record};
-use seq_io::fastq::{Reader, Record};
 use bloomfilter::Bloom;
-use numpy::ndarray::{Array2, ArrayD, ArrayView2};
-use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
-use ofilter::SyncBloom;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use rayon::prelude::*;
+use seq_io::fastq::{Reader, Record, RecordSet};
+use seq_io::parallel::read_parallel;
 use std::collections::hash_map::HashMap;
 use std::str;
+use std::sync::{Arc, Mutex};
 
-static NTHREADS: u32 = 48;
 pub mod functionalities {
     use bio::io::fastq::{self, Record};
     use rand;
     use rayon::prelude::*;
-    use std::{collections::HashMap, str};
     pub struct Student {
         pub age: u32,
     }
@@ -107,8 +103,9 @@ pub mod functionalities {
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(parallel_parse_fastq, m)?)?;
     //m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
-    //m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
 }
@@ -156,7 +153,36 @@ fn extract_kmers(file_path: String, kmer_length: usize) -> PyResult<Vec<String>>
     let kmers: Vec<String> = hash_map.into_keys().collect();
     Ok(reads)
 }
+#[pyfunction]
+fn parallel_write_fastq()
+#[pyfunction]
+fn parallel_parse_fastq(file_path: String) -> PyResult<Vec<String>> {
+    let mut reader = match Reader::from_path(file_path) {
+        Ok(reader) => reader,
+        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
+    };
+    let records: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
 
+    let worker = |record_set: &mut RecordSet| {
+        let mut records = vec![];
+        for result in record_set.into_iter() {
+            let mut vec_record = result.seq().to_vec();
+            let string_record = byte_to_string(&mut vec_record).unwrap();
+            records.push(string_record);
+        }
+        records
+    };
+    let records = read_parallel(reader, 4, 2, worker, |record_sets| {
+        let mut records = vec![];
+        while let Some(fastq_data) = record_sets.next() {
+            let mut record = fastq_data.unwrap().1;
+            records.append(&mut record);
+        }
+        records
+    });
+    //let locked_records = records.lock().unwrap();
+    Ok(records)
+}
 fn generate_kmers(read: &str, kmer_length: &usize) -> Vec<String> {
     read.chars()
         .collect::<Vec<char>>()
@@ -249,80 +275,80 @@ fn parse_fastq_file(file_path: String) -> PyResult<()> {
     };
     Ok(())
 }
-//#[pyfunction]
-//fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
-//    let mut reader = fastq::Reader::from_file(file_path).unwrap();
-//    let records = match reader.records() {
-//        Ok(records) => records,
-//        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
-//    };
-//    //let string_reads = records.
-//}
-//#[pyfunction]
-//fn write_fastq_file(
-//    dst_filename: String,
-//    src_filename: String,
-//    matrix: &Bound<'_, PyArray2<u8>>,
-//) -> PyResult<()> {
-//    let mut writer = match fastq::Writer::to_file(dst_filename) {
-//        Ok(writer) => writer,
-//        Err(_) => {
-//            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
-//        }
-//    };
-//
-//    let reader = match fastq::Reader::from_file(src_filename) {
-//        Ok(reader) => reader,
-//        Err(_) => {
-//            return Err(PyErr::new::<PyTypeError, _>(
-//                "Destination file name cannot be located",
-//            ));
-//        }
-//    };
-//
-//    let np_matrix = unsafe { matrix.as_array() };
-//    let result: Result<Vec<String>, _> = np_matrix
-//        .rows()
-//        .into_iter()
-//        .map(|row| {
-//            let mut vector_row = row.to_vec();
-//            byte_to_string(&mut vector_row)
-//        })
-//        .collect();
-//
-//    match result {
-//        Ok(rows_as_strings) => {
-//            for (record, row) in reader.records().zip(rows_as_strings.iter()) {
-//                if let Ok(record) = record {
-//                    let new_record = Record::with_attrs(
-//                        record.id(),
-//                        record.desc(),
-//                        row.as_bytes(),
-//                        record.qual(),
-//                    );
-//
-//                    if let Err(_) = writer.write_record(&new_record) {
-//                        return Err(PyErr::new::<PyTypeError, _>(
-//                            "Error writing new record to the file",
-//                        ));
-//                    }
-//                } else {
-//                    return Err(PyErr::new::<PyTypeError, _>(
-//                        "Something went wrong during extracting record",
-//                    ));
-//                }
-//            }
-//        }
-//        Err(e) => {
-//            return Err(e);
-//        }
-//    }
-//    Ok(())
-//}
+#[pyfunction]
+fn parse_fastq_file_v2_parallel(file_path: String) -> PyResult<Vec<String>> {
+    let mut reader = fastq::Reader::from_file(file_path).unwrap();
+    let records = match reader.records() {
+        Ok(records) => records,
+        Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
+    };
+    //let string_reads = records.
+}
+#[pyfunction]
+fn write_fastq_file(
+    dst_filename: String,
+    src_filename: String,
+    matrix: &Bound<'_, PyArray2<u8>>,
+) -> PyResult<()> {
+    let mut writer = match fastq::Writer::to_file(dst_filename) {
+        Ok(writer) => writer,
+        Err(_) => {
+            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
+        }
+    };
+
+    let reader = match fastq::Reader::from_file(src_filename) {
+        Ok(reader) => reader,
+        Err(_) => {
+            return Err(PyErr::new::<PyTypeError, _>(
+                "Destination file name cannot be located",
+            ));
+        }
+    };
+
+    let np_matrix = unsafe { matrix.as_array() };
+    let result: Result<Vec<String>, _> = np_matrix
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let mut vector_row = row.to_vec();
+            byte_to_string(&mut vector_row)
+        })
+        .collect();
+
+    match result {
+        Ok(rows_as_strings) => {
+            for (record, row) in reader.records().zip(rows_as_strings.iter()) {
+                if let Ok(record) = record {
+                    let new_record = Record::with_attrs(
+                        record.id(),
+                        record.desc(),
+                        row.as_bytes(),
+                        record.qual(),
+                    );
+
+                    if let Err(_) = writer.write_record(&new_record) {
+                        return Err(PyErr::new::<PyTypeError, _>(
+                            "Error writing new record to the file",
+                        ));
+                    }
+                } else {
+                    return Err(PyErr::new::<PyTypeError, _>(
+                        "Something went wrong during extracting record",
+                    ));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
 
 //this function unwraps for now. Add better error handling
 fn byte_to_string(byte_array: &mut Vec<u8>) -> Result<String, PyErr> {
-    if let Some(cleaned) = byte_array.iter().position(|&b| b == 0){
+    if let Some(cleaned) = byte_array.iter().position(|&b| b == 0) {
         byte_array.truncate(cleaned);
     }
     match std::str::from_utf8(byte_array) {

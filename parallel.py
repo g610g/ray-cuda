@@ -293,7 +293,8 @@ if __name__ == "__main__":
     print(f"number of gpus detected: {gpus_detected}")
     kmer_len = 16
     parse_reads_starttime = time.perf_counter()
-    reads = fastq_parser.parse_fastq_file(sys.argv[1])
+    reads = fastq_parser.parallel_parse_fastq(sys.argv[1])
+    print(f"length of reads: {len(reads)}")
     parse_reads_endtime = time.perf_counter()
     print(
         f"Time it takes to parse reads and kmers {parse_reads_endtime - parse_reads_starttime}"
@@ -350,7 +351,7 @@ if __name__ == "__main__":
 
     ray.get(reads_2d_references)
     kmer_occurences = ray.get(kmer_actors[0].combine_kmers.remote(kmers))
-    print(kmer_occurences )
+    print(kmer_occurences)
     kmer_extract_end_time = time.perf_counter()
     print(
         f"time it takes to Extract kmers and transform kmers: {kmer_extract_end_time - kmer_extract_start_time}"
@@ -403,14 +404,20 @@ if __name__ == "__main__":
     correction_batch_size = 1000000
     correction_result = []
     last_end_idx = 0
-    ray.get([kmer_actor.update_spectrum.remote(sorted_kmer_np_reference) for kmer_actor in kmer_actors])
+    ray.get(
+        [
+            kmer_actor.update_spectrum.remote(sorted_kmer_np_reference)
+            for kmer_actor in kmer_actors
+        ]
+    )
     ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
     back_sequence_start_time = time.perf_counter()
-    corrected_reads = ray.get([kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors])
+    corrected_reads = ray.get(
+        [kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors]
+    )
     corrected_2d_reads_array = np.concatenate(corrected_reads)
     print(f"corrected reads array {corrected_2d_reads_array}")
     print(corrected_2d_reads_array.dtype)
-
 
     # print(solids_host[1])
     # print(solids_host[2])
