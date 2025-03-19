@@ -192,7 +192,7 @@ class KmerExtractorGPU:
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
         # print(f"Kmers after calculating canonical kmers: {final_kmers}")
-        return final_kmers.to_numpy()
+        return final_kmers.to_numpy().astype("uint64", copy=False)
 
     def combine_kmers(self, kmers):
         kmers = np.concatenate(kmers)

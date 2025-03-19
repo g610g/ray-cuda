@@ -293,7 +293,7 @@ if __name__ == "__main__":
     print(f"number of gpus detected: {gpus_detected}")
     kmer_len = 16
     parse_reads_starttime = time.perf_counter()
-    reads = fastq_parser.parallel_parse_fastq(sys.argv[1])
+    reads = fastq_parser.parse_fastq_foreach(sys.argv[1], 0, 10000)
     print(f"length of reads: {len(reads)}")
     parse_reads_endtime = time.perf_counter()
     print(
