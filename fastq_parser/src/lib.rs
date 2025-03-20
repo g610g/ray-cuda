@@ -24,6 +24,7 @@ fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_foreach, m)?)?;
     m.add_function(wrap_pyfunction!(count_reads, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
+    m.add_function(wrap_pyfunction!(write_fastq_file_v2, m)?)?;
     Ok(())
 }
 
@@ -228,6 +229,44 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
         Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
     };
     Ok(res)
+}
+#[pyfunction]
+fn write_fastq_file_v2(
+    dst_filename: String,
+    src_filename: String,
+    matrix: &Bound<'_, PyArray2<u8>>,
+)->PyResult<()>{
+    let np_matrix = unsafe { matrix.as_array() };
+    let result: Result<Vec<String>, _> = np_matrix
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let mut vector_row = row.to_vec();
+            byte_to_string(&mut vector_row)
+        })
+        .collect();
+    let unwrapped_result = result.unwrap();
+    let file = File::open(src_filename).unwrap();
+    let mut writer = BufWriter::new(File::create(dst_filename).unwrap());
+    let reader = BufReader::new(file);
+    let parser = fastq::Parser::new(reader);
+    let mut id = 0;
+    
+    //wtf is this ahahahaha 
+    parser.each(|record| {
+        let seq = unwrapped_result.get(id as usize).unwrap();
+        let mut owned_record = record.to_owned_record();
+        owned_record.seq = seq.as_bytes().to_vec();
+        match owned_record.write(&mut writer){
+            Ok(_) => {
+
+                id += 1;
+                return true;
+            },
+            _ => return false
+        }
+    }).unwrap();
+    Ok(())
 }
 #[pyfunction]
 fn write_fastq_file(
