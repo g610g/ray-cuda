@@ -284,8 +284,8 @@ def test():
 if __name__ == "__main__":
     print(ray.get(test.remote()))
     start_time = time.perf_counter()
-    usage = "Usage " + sys.argv[0] + " <FASTQ file>"
-    if len(sys.argv) != 2:
+    usage = "Usage " + sys.argv[0] + " <FASTQ file> <FASTQ READS COUNT>"
+    if len(sys.argv) != 3:
         print(usage)
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
@@ -293,27 +293,16 @@ if __name__ == "__main__":
     print(f"number of gpus detected: {gpus_detected}")
     kmer_len = 16
     parse_reads_starttime = time.perf_counter()
-    reads = fastq_parser.parse_fastq_foreach(sys.argv[1], 0, 10000)
-    print(f"length of reads: {len(reads)}")
-    parse_reads_endtime = time.perf_counter()
-    print(
-        f"Time it takes to parse reads and kmers {parse_reads_endtime - parse_reads_starttime}"
-    )
-    reads_refer_starttime = time.perf_counter()
-    # reads_reference = ray.put(reads)
-    reads_refer_endtime = time.perf_counter()
-    print(
-        f"time it takes to put reads into object store: {reads_refer_endtime - reads_refer_starttime}"
-    )
+    reads_len = int(sys.argv[2])
+    print(f"length of reads: {reads_len}")
+    
 
     transform_to_string_end_time = time.perf_counter()
     print(
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
-    print(f"Length of reads: {len(reads)}")
     kmer_extract_start_time = time.perf_counter()
     kmer_actors = []
-    reads_len = len(reads)
     reads_per_gpu = reads_len // gpus_detected
     remainder = reads_len % gpus_detected
     start = 0
@@ -328,13 +317,19 @@ if __name__ == "__main__":
     print(start_end)
     for bound in start_end:
         kmer_actors.append(
-            KmerExtractorGPU.remote(kmer_len, reads[bound[0] : bound[1]])
+            KmerExtractorGPU.remote(kmer_len, bound, sys.argv[1])
         )
         print(bound)
 
     kmer_extract_references = []
     offsets_extract_references = []
     reads_2d_references = []
+
+    ray.get([kmer_actor.extract_reads.remote() for kmer_actor in kmer_actors])
+    parse_reads_endtime = time.perf_counter()
+    print(
+        f"Time it takes to parse reads {parse_reads_endtime - parse_reads_starttime}"
+    )
     for kmer_actor in kmer_actors:
         kmer_extract_references.append(
             kmer_actor.calculate_kmers_multiplicity.remote(100000)

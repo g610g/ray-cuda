@@ -4,16 +4,17 @@ import ray
 import math
 import numpy as np
 import cudf
+import fastq_parser
 from numba import cuda
 from shared_core_correction import one_sided_kernel
 from shared_helpers import  back_sequence_kernel
 from utility_helpers.utilities import reverse_comp_kmer
-one_sided_kernel
+
 
 
 @ray.remote(num_gpus=1, num_cpus=4)
 class KmerExtractorGPU:
-    def __init__(self, kmer_length, reads):
+    def __init__(self, kmer_length, bounds, fastq_filepath):
         self.kmer_length = kmer_length
         self.translation_table = str.maketrans(
             {
@@ -30,14 +31,21 @@ class KmerExtractorGPU:
                 "Y": "5",
             }
         )
-        self.reads = reads
+        self.fastq_filepath = fastq_filepath
+        self.bound = bounds
+        self.reads = []
         self.spectrum = []
         self.offsets = []
         self.corrected_reads = []
 
     def update_spectrum(self, spectrum):
         self.spectrum = spectrum
-
+    def extract_reads(self):
+        if len(self.bound) == 0:
+            print("Bound is not set. Add better error handling")
+            return
+        self.reads = fastq_parser.parse_fastq_foreach(self.fastq_filepath, self.bound[0], self.bound[2])
+        
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
         kmers = read_df.str.character_ngrams(self.kmer_length, True)

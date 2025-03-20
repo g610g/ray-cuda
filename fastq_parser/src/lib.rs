@@ -1,18 +1,16 @@
 #![feature(test)]
 extern crate test;
 use std::fs::File;
-use std::error::Error;
-use std::io::{BufReader, SeekFrom, Seek};
+use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use bio::io::fastq::Record;
 use bloomfilter::Bloom;
-use numpy::ndarray::{Array2, ArrayD, ArrayView2};
 use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use rayon::result;
-use seq_io::fastq::Reader;
+use seq_io::fastq::{Reader as FastqReader, Record as RecordTrait};
 //use seq_io::parallel::read_parallel;
-use fastq::{Parser, Record as FastqRecord};
+use fastq::{Record as FastqRecord};
+use seq_io::parallel::{parallel_fastq, Reader};
 use std::collections::hash_map::HashMap;
 use std::str;
 use std::sync::{Arc, Mutex};
@@ -24,6 +22,7 @@ fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     //m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_fastq_foreach, m)?)?;
+    m.add_function(wrap_pyfunction!(count_reads, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     Ok(())
 }
@@ -73,18 +72,52 @@ fn extract_kmers(file_path: String, kmer_length: usize) -> PyResult<Vec<String>>
 }
 //#[pyfunction]
 //fn parallel_write_fastq()
+fn skip(reads_to_skip:u64, seqio_reader: &mut FastqReader<File>)->Result<(), &str> 
+{
+    let mut skipped_reads:u64 = 0;
+    while let Some(_) = seqio_reader.next(){
+        if skipped_reads == reads_to_skip{
+            break;
+        }
+        skipped_reads += 1;
+    }
+    Ok(())
+}
+fn give_bytes_offset(seqio_reader: &FastqReader<File>)->u64{
+    let position = seqio_reader.position();
+    position.byte()
+}
+#[pyfunction]
+fn count_reads(file_path:String)->u64{
+    let file = File::open(file_path).unwrap();
+    let reader = BufReader::new(file);
+    let parser = fastq::Parser::new(reader);
+    let mut read_counts = 0;
+    parser.each(|_|{
+        read_counts += 1;
+        return true;
+    }).expect("Invalid fastq file");
+    read_counts
 
+}
+//start offset signifies 
 #[pyfunction]
 fn parse_fastq_foreach(file_path:String, start_offset:u64, batch_size:u64) -> PyResult<Vec<String>>{
-
+    
+    let mut seqio_reader = FastqReader::from_path(file_path.clone()).unwrap();
+    skip(start_offset, &mut seqio_reader).unwrap();
+    
+    //this is a different reader from above
     let file = File::open(file_path).unwrap();
     let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::Start(start_offset)).unwrap();
-    let parser = Parser::new(reader);
+    
+    reader.seek(SeekFrom::Start(give_bytes_offset(&seqio_reader))).unwrap();
+    let parser = fastq::Parser::new(reader);
+
     let mut result = vec![];
     let mut count = 0;
     parser.each(|record|{
-        if count  > batch_size {
+        if count  >= batch_size {
             return false;
         }
         let byte_seq = record.seq();
@@ -96,11 +129,40 @@ fn parse_fastq_foreach(file_path:String, start_offset:u64, batch_size:u64) -> Py
     Ok(result)
 
 }
+// #[pyfunction]
+// fn parallel_write_fastq(dst_filename: String, src_filename: String, matrix: &Bound<'_, PyArray2<u8>>) -> PyResult<()>{
+//     let mut writer = BufWriter::new(File::create(dst_filename).unwrap());
+//     let reader = FastqReader::from_path(src_filename).unwrap();
+    
+//     let np_matrix = unsafe { matrix.as_array() };
+//     let result: Result<Vec<String>, _> = np_matrix
+//         .rows()
+//         .into_iter()
+//         .map(|row| {
+//             let mut vector_row = row.to_vec();
+//             byte_to_string(&mut vector_row)
+//         })
+//         .collect();
+//     let unwrapped_result = result.unwrap();
+//     let mutex_result = Arc::new(Mutex::new(unwrapped_result));
+//     let worker_func = |record:seq_io::fastq::RefRecord, _| {        
+//         let local_result = mutex_result.clone();
+//         let id = record.id().unwrap().parse::<u64>().unwrap();
+//         let corrected_sequence = local_result.lock().unwrap().get(id as usize).unwrap();
+        
+//         seq_io::fastq::write_to(writer, record.head(), corrected_sequence.as_bytes(), record.qual()).unwrap()
+//     };
+//     parallel_fastq(reader, 32, 12, worker_func, |_, _| {
+
+
+//     });
+//     Ok(())
+// }
 #[pyfunction]
 fn parallel_parse_fastq(file_path:String) -> PyResult<Vec<String>>{
     let file = File::open(file_path).unwrap();
     let reader = BufReader::new(file);
-    let parser = Parser::new(reader);
+    let parser = fastq::Parser::new(reader);
     //this might be slow wrapping in arc mutex 
     let global_results = Arc::new(Mutex::new(vec![]));
 
@@ -108,7 +170,7 @@ fn parallel_parse_fastq(file_path:String) -> PyResult<Vec<String>>{
     let collected_results:Result<Vec<()>, _> = parser.parallel_each(16,
         {
             //the worker closure that will be executed on each worker threads
-            let mut results = Arc::clone(&global_results);
+            let results = Arc::clone(&global_results);
             move |records_sets|{
                 let mut local_results = vec![];
                 for record_set in records_sets{
@@ -140,7 +202,7 @@ fn generate_kmers(read: &str, kmer_length: &usize) -> Vec<String> {
         .collect()
 }
 fn generate_string_reads(file_path: String) -> Result<Vec<String>, &'static str> {
-    match Reader::from_path(file_path) {
+    match FastqReader::from_path(file_path) {
         Ok(mut reader) => {
             let mut read_vector = vec![];
             for result in reader.records() {
