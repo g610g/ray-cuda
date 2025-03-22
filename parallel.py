@@ -407,13 +407,9 @@ if __name__ == "__main__":
     )
     ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
     back_sequence_start_time = time.perf_counter()
-    corrected_reads = ray.get(
+    ray.get(
         [kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors]
     )
-    corrected_2d_reads_array = np.concatenate(corrected_reads)
-    print(f"corrected reads array {corrected_2d_reads_array}")
-    print(corrected_2d_reads_array.dtype)
-
     # print(solids_host[1])
     # print(solids_host[2])
     # ray.get(
@@ -441,9 +437,11 @@ if __name__ == "__main__":
     filename = get_filename_without_extension(sys.argv[1])
     output_filename = filename + "GPUMUSKET.fastq"
     print(output_filename)
-    fastq_data_list = fastq_parser.write_fastq_file_v3(
-        output_filename, sys.argv[1], corrected_2d_reads_array
-    )
+
+    ray.get([kmer_actor.write_corrected_reads.remote(output_filename, sys.argv[1]) for kmer_actor in kmer_actors])
+    # fastq_data_list = fastq_parser.write_fastq_file(
+    #     output_filename, sys.argv[1], corrected_2d_reads
+    # )
 
     write_file_endtime = time.perf_counter()
     print(

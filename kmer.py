@@ -278,8 +278,16 @@ class KmerExtractorGPU:
         print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
         cuda.profile_stop()
 
-        return dev_reads.copy_to_host()
+        self.reads = dev_reads.copy_to_host()
+        print(f"corrected reads array {self.reads}")
+        print(f"corrected reads length: {len(self.reads)}")
+        print(self.reads.dtype)
 
+    #we will call this in parallel
+    def write_corrected_reads(self, output_filename, src_filename):
+        fastq_parser.write_fastq_file(
+        output_filename, src_filename, self.reads, self.bound[0]
+    )
 
 # @ray.remote(num_gpus=0.5, num_cpus=1)
 # class GPUActor:

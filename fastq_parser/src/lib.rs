@@ -1,35 +1,54 @@
 #![feature(test)]
 extern crate test;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use anyhow::Result;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use bio::io::fastq::Record;
 use bloomfilter::Bloom;
 use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use seq_io::fastq::{OwnedRecord, Reader as FastqReader, Record as RecordTrait, RefRecord};
+use seq_io::fastq::{OwnedRecord, Reader as FastqReader, Record as RecordTrait, RecordSet, RefRecord};
 //use seq_io::parallel::read_parallel;
 use fastq::{Record as FastqRecord};
-use seq_io::parallel::{parallel_fastq, Reader};
-use seq_io_parallel::ParallelProcessor;
+use seq_io::parallel::{parallel_fastq, read_parallel, Reader};
+use seq_io_parallel::{ParallelProcessor, ParallelReader};
 use std::collections::hash_map::HashMap;
-use std::str;
+use std::str::{self, from_utf8};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 static NTHREADS:usize = 48;
 
-// #[derive(Clone)]
-// pub struct WriteCalculation {
-//     local_sum: usize,
-//     writer: Arc<Mutex<Box<dyn Write + Send>>>
-// }
+#[derive(Clone)]
+pub struct WriteCalculation {
+    corrected_2d_reads: Vec<String>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>
+}
 
-// impl ParallelProcessor for WriteCalculation{
-//     fn process_record<'a, Rf: seq_io_parallel::MinimalRefRecord<'a>>(&mut self, record: Rf) -> Result<()> {
-        
-//         Ok(())   
-//     }
-// }
+impl ParallelProcessor for WriteCalculation{
+    fn process_record<'a, Rf: seq_io_parallel::MinimalRefRecord<'a>>(&mut self, record: Rf) -> Result<()> {
+        let mut writer: std::sync::MutexGuard<'_, Box<dyn Write + Send>> = self.writer.lock().unwrap();
+        let fastq_header = match str::from_utf8(record.ref_head()) {
+            Ok(str_id) => str_id,
+            Err(_) => {
+                eprintln!("Invalid UTF-8 in record header");
+                return Ok(()); // Return early if the header is invalid
+            }
+        };
+        let id_number: usize = extract_id_number(fastq_header).unwrap();
+        let corrected_sequence: &String = self.corrected_2d_reads.get((id_number - 1)  ).unwrap();
+        seq_io::fastq::write_to(&mut *writer, record.ref_head(), corrected_sequence.as_bytes(), record.ref_qual()).unwrap();
+        Ok(())
+    }
+}
+fn extract_id_number(header: &str) -> Option<usize> {
+    // Split the header by '-' or '.' and get the last part
+    let id_part = header.split(&['-', '.'][..]).last()?;
+
+    // Parse the ID part into a number
+    id_part.parse::<usize>().ok()
+}
+
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
@@ -41,6 +60,7 @@ fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file_v2, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file_v3, m)?)?;
+    m.add_function(wrap_pyfunction!(write_fastq_file_v4, m)?)?;
     Ok(())
 }
 
@@ -246,6 +266,30 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
     };
     Ok(res)
 }
+
+#[pyfunction]
+fn write_fastq_file_v4(dst_filename:String, src_filename: String, matrix:&Bound<'_, PyArray2<u8>>)-> PyResult<()>{
+    let np_matrix = unsafe { matrix.as_array() };
+    let result: Result<Vec<String>, _> = np_matrix
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let mut vector_row = row.to_vec();
+            byte_to_string(&mut vector_row)
+        })
+        .collect();
+    let unwrapped_result = result.unwrap();
+    let seqio_reader = FastqReader::from_path(src_filename).unwrap();
+    let file = File::create(dst_filename).unwrap();
+    let buffered_writer: Box<dyn Write + Send> = Box::new(BufWriter::new(file));
+    let writer = Arc::new(Mutex::new(buffered_writer));
+    let processor = WriteCalculation{
+        corrected_2d_reads:unwrapped_result,
+        writer
+    };
+    seqio_reader.process_parallel(processor, 24).unwrap();
+    Ok(())
+}
 #[pyfunction]
 fn write_fastq_file_v3(dst_filename:String, src_filename: String, matrix:&Bound<'_, PyArray2<u8>>)-> PyResult<()>{
     let np_matrix = unsafe { matrix.as_array() };
@@ -259,22 +303,28 @@ fn write_fastq_file_v3(dst_filename:String, src_filename: String, matrix:&Bound<
         .collect();
     let unwrapped_result = result.unwrap();
     let seqio_reader = FastqReader::from_path(src_filename).unwrap();
-    let file = File::create(dst_filename).unwrap();
+    let file  = OpenOptions::new().create(true).append(true).open(dst_filename).expect("Error creating file instance");
     let writer = Arc::new(Mutex::new(BufWriter::new(file)));
     let work = {
         let writer = writer.clone();
         // Write the record to the file
-        move |record: RefRecord<'_>, _: &mut ()| {
-            let mut writer = writer.lock().unwrap();    
-            println!("{}", record.id().unwrap());        
-            let id = record.id().unwrap().parse::<u64>().unwrap();
-            let corrected_sequence = unwrapped_result.get(id as usize).unwrap();
-            seq_io::fastq::write_to(&mut *writer, record.head(), corrected_sequence.as_bytes(), record.qual()).unwrap();
+        move |records:&mut RecordSet| {
+            let mut writer = writer.lock().unwrap();
+            for record in records.into_iter(){
+                let id_number:usize = extract_id_number(record.id().unwrap()).unwrap();
+                let corrected_sequence = unwrapped_result.get(id_number - 1).unwrap();
+                seq_io::fastq::write_to(&mut *writer, record.head(), corrected_sequence.as_bytes(), record.qual()).unwrap();
+            }
         }
     };
-    parallel_fastq(seqio_reader, 4, 2, work, |_, _| {
-        Some(())
-    }).unwrap();
+    read_parallel(seqio_reader, 24, 10, work, |record_set|{
+        while let Some(_) = record_set.next() {   
+        }
+    });
+
+    // parallel_fastq(seqio_reader, 4, 2, work, |_, _| {
+    //     Some(())
+    // }).unwrap();
     Ok(())
 }
 #[pyfunction]
@@ -306,7 +356,6 @@ fn write_fastq_file_v2(
         owned_record.seq = seq.as_bytes().to_vec();
         match owned_record.write(&mut writer){
             Ok(_) => {
-
                 id += 1;
                 return true;
             },
@@ -320,14 +369,12 @@ fn write_fastq_file(
     dst_filename: String,
     src_filename: String,
     matrix: &Bound<'_, PyArray2<u8>>,
+    offset: usize,
 ) -> PyResult<()> {
-    let mut writer = match bio::io::fastq::Writer::to_file(dst_filename) {
-        Ok(writer) => writer,
-        Err(_) => {
-            return Err(PyErr::new::<PyTypeError, _>("Invalid bytes array"));
-        }
-    };
-
+    let file  = OpenOptions::new().create(true).append(true).open(dst_filename).expect("Error creating file instance");
+    let writer = BufWriter::new(file);
+    let mut writer =  bio::io::fastq::Writer::new(writer);
+       
     let reader = match bio::io::fastq::Reader::from_file(src_filename) {
         Ok(reader) => reader,
         Err(_) => {
@@ -346,10 +393,10 @@ fn write_fastq_file(
             byte_to_string(&mut vector_row)
         })
         .collect();
-
+    let records = reader.records().skip(offset);
     match result {
         Ok(rows_as_strings) => {
-            for (record, row) in reader.records().zip(rows_as_strings.iter()) {
+            for (record, row) in records.zip(rows_as_strings.iter()) {
                 if let Ok(record) = record {
                     let new_record = Record::with_attrs(
                         record.id(),
