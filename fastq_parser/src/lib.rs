@@ -7,14 +7,29 @@ use bloomfilter::Bloom;
 use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use seq_io::fastq::{Reader as FastqReader, Record as RecordTrait};
+use seq_io::fastq::{OwnedRecord, Reader as FastqReader, Record as RecordTrait, RefRecord};
 //use seq_io::parallel::read_parallel;
 use fastq::{Record as FastqRecord};
 use seq_io::parallel::{parallel_fastq, Reader};
+use seq_io_parallel::ParallelProcessor;
 use std::collections::hash_map::HashMap;
 use std::str;
 use std::sync::{Arc, Mutex};
+use std::io::Write;
 static NTHREADS:usize = 48;
+
+// #[derive(Clone)]
+// pub struct WriteCalculation {
+//     local_sum: usize,
+//     writer: Arc<Mutex<Box<dyn Write + Send>>>
+// }
+
+// impl ParallelProcessor for WriteCalculation{
+//     fn process_record<'a, Rf: seq_io_parallel::MinimalRefRecord<'a>>(&mut self, record: Rf) -> Result<()> {
+        
+//         Ok(())   
+//     }
+// }
 #[pymodule]
 fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_fastq_file, m)?)?;
@@ -25,6 +40,7 @@ fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(count_reads, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file_v2, m)?)?;
+    m.add_function(wrap_pyfunction!(write_fastq_file_v3, m)?)?;
     Ok(())
 }
 
@@ -229,6 +245,37 @@ fn parse_fastq_file(file_path: String) -> PyResult<Vec<String>> {
         Err(_) => return Err(PyErr::new::<PyTypeError, _>("Something went wrong")),
     };
     Ok(res)
+}
+#[pyfunction]
+fn write_fastq_file_v3(dst_filename:String, src_filename: String, matrix:&Bound<'_, PyArray2<u8>>)-> PyResult<()>{
+    let np_matrix = unsafe { matrix.as_array() };
+    let result: Result<Vec<String>, _> = np_matrix
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let mut vector_row = row.to_vec();
+            byte_to_string(&mut vector_row)
+        })
+        .collect();
+    let unwrapped_result = result.unwrap();
+    let seqio_reader = FastqReader::from_path(src_filename).unwrap();
+    let file = File::create(dst_filename).unwrap();
+    let writer = Arc::new(Mutex::new(BufWriter::new(file)));
+    let work = {
+        let writer = writer.clone();
+        // Write the record to the file
+        move |record: RefRecord<'_>, _: &mut ()| {
+            let mut writer = writer.lock().unwrap();    
+            println!("{}", record.id().unwrap());        
+            let id = record.id().unwrap().parse::<u64>().unwrap();
+            let corrected_sequence = unwrapped_result.get(id as usize).unwrap();
+            seq_io::fastq::write_to(&mut *writer, record.head(), corrected_sequence.as_bytes(), record.qual()).unwrap();
+        }
+    };
+    parallel_fastq(seqio_reader, 4, 2, work, |_, _| {
+        Some(())
+    }).unwrap();
+    Ok(())
 }
 #[pyfunction]
 fn write_fastq_file_v2(

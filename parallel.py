@@ -441,7 +441,7 @@ if __name__ == "__main__":
     filename = get_filename_without_extension(sys.argv[1])
     output_filename = filename + "GPUMUSKET.fastq"
     print(output_filename)
-    fastq_data_list = fastq_parser.write_fastq_file_v2(
+    fastq_data_list = fastq_parser.write_fastq_file_v3(
         output_filename, sys.argv[1], corrected_2d_reads_array
     )
 
