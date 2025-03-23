@@ -1,9 +1,11 @@
 #![feature(test)]
 extern crate test;
 use std::fs::{File, OpenOptions};
+use std::os::unix::fs::FileExt; // Import the FileExt trait
 use anyhow::Result;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use bio::io::fastq::Record;
+use std::io;
 use bloomfilter::Bloom;
 use numpy::{IntoPyArray, PyArray2, PyArrayMethods};
 use pyo3::exceptions::PyTypeError;
@@ -55,6 +57,7 @@ fn fastq_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parallel_parse_fastq, m)?)?;
     //m.add_function(wrap_pyfunction!(parse_fastq_file_parallel, m)?)?;
     m.add_function(wrap_pyfunction!(write_fastq_file, m)?)?;
+    m.add_function(wrap_pyfunction!(combine_files, m)?)?;
     m.add_function(wrap_pyfunction!(parse_fastq_foreach, m)?)?;
     m.add_function(wrap_pyfunction!(count_reads, m)?)?;
     m.add_function(wrap_pyfunction!(extract_kmers, m)?)?;
@@ -365,16 +368,27 @@ fn write_fastq_file_v2(
     Ok(())
 }
 #[pyfunction]
+fn combine_files(output_files: Vec<String>, final_output: String) -> io::Result<()> {
+    let mut final_writer = BufWriter::new(File::create(final_output)?);
+
+    for file_path in output_files {
+        let mut reader = BufReader::new(File::open(file_path)?);
+        io::copy(&mut reader, &mut final_writer)?;
+    }
+
+    final_writer.flush()?;
+    Ok(())
+}
+#[pyfunction]
 fn write_fastq_file(
     dst_filename: String,
     src_filename: String,
     matrix: &Bound<'_, PyArray2<u8>>,
     offset: usize,
 ) -> PyResult<()> {
-    let file  = OpenOptions::new().create(true).append(true).open(dst_filename).expect("Error creating file instance");
-    let writer = BufWriter::new(file);
-    let mut writer =  bio::io::fastq::Writer::new(writer);
-       
+    // let file  = File::open(dst_filename).unwrap();
+    //testing large buffer size
+    let mut writer =  bio::io::fastq::Writer::to_file(dst_filename).expect("Error opening file"); 
     let reader = match bio::io::fastq::Reader::from_file(src_filename) {
         Ok(reader) => reader,
         Err(_) => {
@@ -383,7 +397,7 @@ fn write_fastq_file(
             ));
         }
     };
-
+    let mut number_of_written_records = 0;
     let np_matrix = unsafe { matrix.as_array() };
     let result: Result<Vec<String>, _> = np_matrix
         .rows()
@@ -393,7 +407,9 @@ fn write_fastq_file(
             byte_to_string(&mut vector_row)
         })
         .collect();
+   
     let records = reader.records().skip(offset);
+
     match result {
         Ok(rows_as_strings) => {
             for (record, row) in records.zip(rows_as_strings.iter()) {
@@ -410,6 +426,7 @@ fn write_fastq_file(
                             "Error writing new record to the file",
                         ));
                     }
+                    number_of_written_records += 1;
                 } else {
                     return Err(PyErr::new::<PyTypeError, _>(
                         "Something went wrong during extracting record",
@@ -421,6 +438,8 @@ fn write_fastq_file(
             return Err(e);
         }
     }
+    // writer.flush().unwrap();
+    println!("Number of records written is {}", number_of_written_records);
     Ok(())
 }
 

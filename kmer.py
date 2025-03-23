@@ -282,25 +282,15 @@ class KmerExtractorGPU:
         print(f"corrected reads array {self.reads}")
         print(f"corrected reads length: {len(self.reads)}")
         print(self.reads.dtype)
+        return self.reads
 
     #we will call this in parallel
-    def write_corrected_reads(self, output_filename, src_filename):
+    def write_corrected_reads(self, output_filename, src_filename, bound):
+        print(bound)
         fastq_parser.write_fastq_file(
         output_filename, src_filename, self.reads, self.bound[0]
     )
 
-# @ray.remote(num_gpus=0.5, num_cpus=1)
-# class GPUActor:
-#     def __init__(self, gpuExtractor):
-#         self.spectrum = []
-#         self.gpuExtractor = gpuExtractor
-#     def run(self):
-#         spectrumRef = self.gpuExtractor.calculate_kmers_multiplicity.remote(150000)
-#         offsetsRef = self.gpuExtractor.get_offsets.remote()
-#         transformRef = self.gpuExtractor.transform_reads_2_1d.remote(150000)
-#         ray.get(offsetsRef) 
-#         ray.get(transformRef) 
-#         return ray.get(spectrumRef)
 # TODO::refactor
 def calculatecutoff_threshold(occurence_data, bin):
 

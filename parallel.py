@@ -1,5 +1,6 @@
 import time
 import os
+os.environ["RAY_DEDUP_LOGS"] = "0"
 import sys
 import cudf
 import numpy as np
@@ -18,8 +19,10 @@ from voting import *
 from kmer import *
 from utility_helpers.utilities import *
 
+
 ray.init(dashboard_host="0.0.0.0")
-# os.environ["NUMBA_ENABLE_CUDASIM"] = "1"
+
+# RAY_DEDUP_LOGS=0
 from numba import cuda
 
 
@@ -407,9 +410,10 @@ if __name__ == "__main__":
     )
     ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
     back_sequence_start_time = time.perf_counter()
-    ray.get(
+    corrected2d_reads = ray.get(
         [kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors]
     )
+    combined_corrected_reads = np.concatenate(corrected2d_reads, axis=0)
     # print(solids_host[1])
     # print(solids_host[2])
     # ray.get(
@@ -438,9 +442,24 @@ if __name__ == "__main__":
     output_filename = filename + "GPUMUSKET.fastq"
     print(output_filename)
 
-    ray.get([kmer_actor.write_corrected_reads.remote(output_filename, sys.argv[1]) for kmer_actor in kmer_actors])
+    # ray.get([kmer_actor.write_corrected_reads.remote(output_filename, sys.argv[1], bound) for (kmer_actor, bound) in zip(kmer_actors, start_end)])
+    write_references = []
+    output_files = []
+    num = 1
+    for (kmer_actor, bound) in zip(kmer_actors, start_end):
+        local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
+        print(local_filename)
+        output_files.append(local_filename)
+        write_references.append(
+            kmer_actor.write_corrected_reads.remote(local_filename, sys.argv[1], bound)
+        )
+        num += 1
+    ray.get(write_references)
+    print("Done writing to different files")
+    fastq_parser.combine_files(output_files, output_filename)
+    print("Done combining different files") 
     # fastq_data_list = fastq_parser.write_fastq_file(
-    #     output_filename, sys.argv[1], corrected_2d_reads
+    #     output_filename, sys.argv[1], combined_corrected_reads
     # )
 
     write_file_endtime = time.perf_counter()
