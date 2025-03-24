@@ -100,7 +100,7 @@ def test_cuda_array_context():
 
 @ray.remote(num_gpus=1, num_cpus=2)
 def remote_core_correction(
-    kmer_spectrum, reads_2d, offsets, kmer_len, last_end_idx, batch_size
+    kmer_spectrum, reads_2d, offsets, kmer_len
 ):
     cuda.profile_start()
     start = cuda.event()
@@ -113,15 +113,12 @@ def remote_core_correction(
     # transfering necessary data into GPU side
     MAX_READ_LENGTH = 400
     dev_reads_2d = cuda.to_device(reads_2d)
+    print("done transferring reads into device")
     dev_kmer_spectrum = cuda.to_device(kmer_spectrum)
     dev_offsets = cuda.to_device(offsets)
-    max_votes = cuda.to_device(np.zeros((offsets.shape[0], 100), dtype="int32"))
     dev_reads_corrected_2d = cuda.to_device(
         np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
     )
-    solids = cuda.to_device(np.zeros((offsets.shape[0], MAX_READ_LENGTH), dtype="int8"))
-    # allocating gpu threads
-    # bpg = math.ceil(offsets.shape[0] // tpb)
     tpb = 512
     bpg = (offsets.shape[0] + tpb) // tpb
 
@@ -130,9 +127,7 @@ def remote_core_correction(
         dev_reads_2d,
         dev_offsets,
         kmer_len,
-        max_votes,
         dev_reads_corrected_2d,
-        solids,
     )
 
     end.record()
@@ -141,7 +136,7 @@ def remote_core_correction(
     print(f"execution time of the kernel:  {transfer_time} ms")
 
     cuda.profile_stop()
-    return dev_reads_corrected_2d.copy_to_host(), solids.copy_to_host()
+    return dev_reads_corrected_2d.copy_to_host()
 
 
 # a kernel that brings back the sequences by using the offsets array
@@ -285,7 +280,7 @@ def test():
 
 
 if __name__ == "__main__":
-    print(ray.get(test.remote()))
+    # print(ray.get(test.remote()))
     start_time = time.perf_counter()
     usage = "Usage " + sys.argv[0] + " <FASTQ file> <FASTQ READS COUNT>"
     if len(sys.argv) != 3:
@@ -293,12 +288,13 @@ if __name__ == "__main__":
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
     gpus_detected = int(ray.cluster_resources()["GPU"])
+    gpus_detected = 1
+    # hasone_gpu = gpus_detected == 1
     print(f"number of gpus detected: {gpus_detected}")
     kmer_len = 16
     parse_reads_starttime = time.perf_counter()
     reads_len = int(sys.argv[2])
-    print(f"length of reads: {reads_len}")
-    
+    # print(f"length of reads: {reads_len}")
 
     transform_to_string_end_time = time.perf_counter()
     print(
@@ -316,18 +312,19 @@ if __name__ == "__main__":
         start_end.append([start, end, end - start])
         start = end
 
-    print(reads_len)
-    print(start_end)
+    # print(reads_len)
+    # print(start_end)
     for bound in start_end:
         kmer_actors.append(
             KmerExtractorGPU.remote(kmer_len, bound, sys.argv[1])
         )
-        print(bound)
 
     kmer_extract_references = []
     offsets_extract_references = []
     reads_2d_references = []
-
+    reads = []
+    # if hasone_gpu:
+    #     reads = ray.get(kmer_actors[0].extract_reads.remote())
     ray.get([kmer_actor.extract_reads.remote() for kmer_actor in kmer_actors])
     parse_reads_endtime = time.perf_counter()
     print(
@@ -335,7 +332,7 @@ if __name__ == "__main__":
     )
     for kmer_actor in kmer_actors:
         kmer_extract_references.append(
-            kmer_actor.calculate_kmers_multiplicity.remote(100000)
+            kmer_actor.calculate_kmers_multiplicity.remote(1500000)
         )
     kmers = ray.get(kmer_extract_references)
     # print(kmers)
@@ -381,8 +378,8 @@ if __name__ == "__main__":
     ]
 
     kmer_np = filtered_kmer_df.astype("uint64").to_numpy()
-    print(kmer_np)
-    print(f"Number of trusted kmers: {kmer_np.shape[0]}")
+    # print(kmer_np)
+    # print(f"Number of trusted kmers: {kmer_np.shape[0]}")
 
     sort_start_time = time.perf_counter()
 
@@ -392,12 +389,10 @@ if __name__ == "__main__":
 
     # print(f"reads 1d length: {len(reads_2d)}")
     # sorting the kmer spectrum in order to make the search faster with binary search
-    print(f"sorted by occurence {sorted_by_occurence[:100]}")
-    print(f"sorted by kmer {sorted_kmer_np[:100]}")
+    # print(f"sorted by occurence {sorted_by_occurence[:100]}")
+    # print(f"sorted by kmer {sorted_kmer_np[:100]}")
     print(f"sorting kmer spectrum takes: {sort_end_time - sort_start_time}")
 
-    # NOTE::correcting by batch is not used currently
-    # we will try correcting by batch
     sorted_kmer_np_reference = ray.put(sorted_kmer_np)
     correction_batch_size = 1000000
     correction_result = []
@@ -409,31 +404,15 @@ if __name__ == "__main__":
         ]
     )
     ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
+
+    # ray.get(remote_core_correction.remote(sorted_kmer_np_reference, reads, offsets, 16))
+
+    print("done correcting")
     back_sequence_start_time = time.perf_counter()
-    corrected2d_reads = ray.get(
+    ray.get(
         [kmer_actor.back_to_sequence_helper.remote() for kmer_actor in kmer_actors]
     )
-    combined_corrected_reads = np.concatenate(corrected2d_reads, axis=0)
-    # print(solids_host[1])
-    # print(solids_host[2])
-    # ray.get(
-    #     [
-    #         check_solids.remote(solids_host[idx : idx + batch_size], 100)
-    #         for idx in range(0, len(solids_host), batch_size)
-    #     ]
-    # )
-    # ray.get(
-    #     [
-    #         calculate_non_solids.remote(solids_host[idx : idx + batch_size], 100)
-    #         for idx in range(0, len(solids_host), batch_size)
-    #     ]
-    # )
-    # ray.get(
-    #     [
-    #         check_uncorrected.remote(solids_host[idx : idx + batch_size])
-    #         for idx in range(0, len(solids_host), batch_size)
-    #     ]
-    # )
+    # combined_corrected_reads = np.concatenate(corrected2d_reads, axis=0)
     back_sequence_end_time = time.perf_counter()
 
     write_file_starttime = time.perf_counter()
@@ -445,22 +424,44 @@ if __name__ == "__main__":
     # ray.get([kmer_actor.write_corrected_reads.remote(output_filename, sys.argv[1], bound) for (kmer_actor, bound) in zip(kmer_actors, start_end)])
     write_references = []
     output_files = []
-    num = 1
-    for (kmer_actor, bound) in zip(kmer_actors, start_end):
-        local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
-        print(local_filename)
-        output_files.append(local_filename)
-        write_references.append(
-            kmer_actor.write_corrected_reads.remote(local_filename, sys.argv[1], bound)
-        )
-        num += 1
-    ray.get(write_references)
+
+    if gpus_detected == 1:
+        bounds = []
+        start = 0
+        tasks = 5
+        reads_per_task = reads_len // tasks 
+        remainder = reads_len % tasks
+        for i in range(5):
+            extra = 1 if i < remainder else 0  # Distribute remainder to first GPUs
+            end = start + reads_per_task + extra
+            bounds.append([start, end, end - start])
+            start = end
+        num = 1
+        corrected_reads = ray.get(kmer_actors[0].get_actor_reads.remote())
+        print(f"corrected reads: {corrected_reads}")
+        print(f"bounds : {bounds}")
+        for bound in bounds:
+            local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
+            output_files.append(local_filename)
+            write_references.append(write_fastq_file.remote(local_filename, sys.argv[1], bound, corrected_reads[bound[0] : bound[1]]))
+            num += 1
+        ray.get(write_references)
+
+    else:
+        num = 1
+        for (kmer_actor, bound) in zip(kmer_actors, start_end):
+            local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
+            # print(local_filename)
+            output_files.append(local_filename)
+            write_references.append(
+                kmer_actor.write_corrected_reads.remote(local_filename, sys.argv[1], bound)
+            )
+            num += 1
+        ray.get(write_references)
+
     print("Done writing to different files")
     fastq_parser.combine_files(output_files, output_filename)
     print("Done combining different files") 
-    # fastq_data_list = fastq_parser.write_fastq_file(
-    #     output_filename, sys.argv[1], combined_corrected_reads
-    # )
 
     write_file_endtime = time.perf_counter()
     print(

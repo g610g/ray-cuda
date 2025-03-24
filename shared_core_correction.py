@@ -400,9 +400,8 @@ def one_sided_kernel(
     reads,
     offsets,
     kmer_len,
-    max_votes,
     dev_reads_result,
-    dev_solids,
+   
 ):
     threadIdx = cuda.grid(1)
     if threadIdx < offsets.shape[0]:
@@ -417,8 +416,8 @@ def one_sided_kernel(
         region_indices = cuda.local.array((20, 3), dtype="int32")
         voting_matrix = cuda.local.array((MAX_LEN, 4), dtype="uint32")
         selected_bases = cuda.local.array((6, 2), dtype="uint64")
-        lpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
-        rpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
+        # lpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
+        # rpossible_base_mutations = cuda.local.array((6, 2), dtype="uint64")
         km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
         aux_km2 = cuda.local.array(DEFAULT_KMER_LEN, dtype="uint8")
@@ -510,7 +509,6 @@ def one_sided_kernel(
                 if corrections_made == -1:
                     for idx in range(0, seqlen):
                         dev_reads_result[threadIdx][idx] = local_read[idx]
-                        dev_solids[threadIdx][idx] = solids[idx]
                     return
 
                 # no corrections made
@@ -541,7 +539,6 @@ def one_sided_kernel(
                 aux_km2,
             )
 
-            max_votes[threadIdx][nerr - 1] = max_vote
 
             # the read is error free at this point
             if max_vote == 0:
@@ -550,7 +547,6 @@ def one_sided_kernel(
                 apply_voting_result(local_read, voting_matrix, seqlen, bases, max_vote)
 
         for idx in range(0, seqlen):
-            dev_solids[threadIdx][idx] = solids[idx]
             dev_reads_result[threadIdx][idx] = local_read[idx]
         cuda.syncthreads()
 

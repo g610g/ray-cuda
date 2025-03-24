@@ -2,7 +2,7 @@ from helpers import to_array_kmer, transform_to_key
 import ray
 from numba import cuda
 from shared_helpers import copy_kmer, lower, reverse_comp
-
+import fastq_parser
 
 def get_filename_without_extension(file_path) -> str:
     if file_path.endswith((".fastq")):
@@ -145,4 +145,10 @@ def calculate_non_solids(solids, seqlen):
                 break
     print(
         f"{unsolid} number of reads that is not solid out of {len(solids)} reads"
+    )
+
+@ray.remote(num_cpus=1)
+def write_fastq_file(output_filename, src_filename,bound, reads):
+    fastq_parser.write_fastq_file(
+    output_filename, src_filename, reads, bound[0]
     )

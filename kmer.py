@@ -1,5 +1,6 @@
 from typing import final
 from unittest import result
+import time
 import ray
 import math
 import numpy as np
@@ -40,12 +41,14 @@ class KmerExtractorGPU:
 
     def update_spectrum(self, spectrum):
         self.spectrum = spectrum
-    def extract_reads(self):
+
+    def extract_reads(self, ):
         if len(self.bound) == 0:
             print("Bound is not set. Add better error handling")
             return
         self.reads = fastq_parser.parse_fastq_foreach(self.fastq_filepath, self.bound[0], self.bound[2])
-        
+
+
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
         kmers = read_df.str.character_ngrams(self.kmer_length, True)
@@ -98,7 +101,7 @@ class KmerExtractorGPU:
             .astype("uint8")
         )
         self.reads = transformed.to_numpy().reshape(len(self.reads), max_length)
-
+    
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
@@ -107,15 +110,12 @@ class KmerExtractorGPU:
         # (refactor this type conversions)
         kmer_np = kmer_df.astype("uint64").to_numpy().astype(np.uint64)
         dev_kmers = cuda.to_device(kmer_np)
-        dev_kmer_array = cuda.to_device(
-            np.zeros((kmer_np.shape[0], self.kmer_length), dtype="uint8")
-        )
         tbp = 1024
         # bpg = math.ceil(kmer_np.shape[0] / tbp)
         bpg = (kmer_np.shape[0] + tbp) // tbp
         reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length)
         kmers = dev_kmers.copy_to_host()
-        return [kmers, dev_kmer_array.copy_to_host()]
+        return kmers
 
     # store the dataframe as state of this worker to be used by downstream tasks
     def calculate_kmers_multiplicity_batch(self, batch_size):
@@ -150,7 +150,7 @@ class KmerExtractorGPU:
         # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         # print(f"final result shape is: {concat_result.shape}")
         # print(f"Kmers before calculating canonical kmers: {concat_result}")
-        [kmers_np, canonical_kmers] = self.check_rev_comp_kmer(concat_result)
+        kmers_np = self.check_rev_comp_kmer(concat_result)
 
         final_kmers = (
             cudf.DataFrame(
@@ -185,7 +185,7 @@ class KmerExtractorGPU:
         result_frame = numeric_ngrams.value_counts().reset_index()
 
         result_frame.columns = ["translated", "multiplicity"]
-        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
         # print(f"Kmers before calculating canonical kmers: {result_frame}")
         # we do this by batch
         [kmers_np, _] = self.check_rev_comp_kmer(result_frame)
@@ -204,38 +204,29 @@ class KmerExtractorGPU:
 
     def combine_kmers(self, kmers):
         kmers = np.concatenate(kmers)
-        print(f"Kmers within combine: {kmers}")
+        # print(f"Kmers within combine: {kmers}")
         kmers = cudf.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
-        print(f"Kmer dataframe within combine:{kmers}")
+        # print(f"Kmer dataframe within combine:{kmers}")
         grouped_kmers = kmers.groupby("canonical").sum().reset_index()
         grouped_kmers['multiplicity'] = grouped_kmers['multiplicity'].clip(upper=255)
         return grouped_kmers
+
     def correct_reads(self):
         cuda.profile_start()
         start = cuda.event()
         end = cuda.event()
         start.record()
-        print(f"offset shape: {self.offsets.shape}")
-        print(f"offset dtype: {self.offsets.dtype}")
-        print(f"reads dtype: {self.reads.dtype}")
-        print(f"Kmer spectrum: {self.spectrum}")
         # transfering necessary data into GPU side
         MAX_READ_LENGTH = 400
         dev_reads_2d = cuda.to_device(self.reads)
         dev_kmer_spectrum = cuda.to_device(self.spectrum)
         dev_offsets = cuda.to_device(self.offsets)
-        max_votes = cuda.to_device(
-            np.zeros((self.offsets.shape[0], 100), dtype="int32")
-        )
         dev_reads_corrected_2d = cuda.to_device(
             np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
         )
-        solids = cuda.to_device(
-            np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="int8")
-        )
         # allocating gpu threads
         # bpg = math.ceil(offsets.shape[0] // tpb)
-        tpb = 256
+        tpb = 512
         bpg = (self.offsets.shape[0] + tpb) // tpb
 
         one_sided_kernel[bpg, tpb](
@@ -243,9 +234,7 @@ class KmerExtractorGPU:
             dev_reads_2d,
             dev_offsets,
             self.kmer_length,
-            max_votes,
             dev_reads_corrected_2d,
-            solids,
         )
 
         end.record()
@@ -258,8 +247,8 @@ class KmerExtractorGPU:
         # find reads max length
         offsets_df = cudf.DataFrame({"start": self.offsets[:, 0], "end": self.offsets[:, 1]})
         offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
-        max_segment_length = offsets_df["length"].max()
-        print(f"max segment length: {max_segment_length}")
+        # max_segment_length = offsets_df["length"].max()
+        # print(f"max segment length: {max_segment_length}")
         cuda.profile_start()
         start = cuda.event()
         end = cuda.event()
@@ -279,27 +268,27 @@ class KmerExtractorGPU:
         cuda.profile_stop()
 
         self.reads = dev_reads.copy_to_host()
-        print(f"corrected reads array {self.reads}")
-        print(f"corrected reads length: {len(self.reads)}")
-        print(self.reads.dtype)
-        return self.reads
 
     #we will call this in parallel
     def write_corrected_reads(self, output_filename, src_filename, bound):
-        print(bound)
+        # print(bound)
         fastq_parser.write_fastq_file(
         output_filename, src_filename, self.reads, self.bound[0]
     )
+    def get_actor_reads(self):
+        return self.reads
+    def get_actor_offsets(self):
+        return self.offsets
 
 # TODO::refactor
 def calculatecutoff_threshold(occurence_data, bin):
 
     hist_vals, bin_edges = np.histogram(occurence_data, bins=int(bin))
 
-    print((hist_vals[:]))
+    # print((hist_vals[:]))
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-    print(bin_centers[:])
+    # print(bin_centers[:])
 
     valley_index = 0
 
