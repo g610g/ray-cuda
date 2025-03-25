@@ -1,6 +1,3 @@
-from typing import final
-from unittest import result
-import time
 import pandas as pd
 import ray
 import math
@@ -11,8 +8,6 @@ from numba import cuda
 from shared_core_correction import one_sided_kernel
 from shared_helpers import  back_sequence_kernel
 from utility_helpers.utilities import reverse_comp_kmer
-
-
 
 @ray.remote(num_gpus=1, num_cpus=4)
 class KmerExtractorGPU:
@@ -137,28 +132,29 @@ class KmerExtractorGPU:
             # print(unique_chars)
             numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
             result_frame = numeric_ngrams.value_counts().reset_index()
-            result_frame = result_frame[result_frame['count'] > 3]
-            panda_frame = result_frame.to_pandas()
-            all_results.append(panda_frame)
+            if len(self.reads) > 15000000:
 
-        concat_result = (
-        pd.concat(all_results, ignore_index=True)
-        .groupby("translated", as_index=False)
-        .sum()
-        )
-        # concat_result = (
-        #     cudf.concat(all_results, ignore_index=True)
-        #     .groupby("translated")
-        #     .sum()
-        #     .reset_index()
-        # )
+                result_frame = result_frame[result_frame['count'] > 3]
+                panda_frame = result_frame.to_pandas()
+                all_results.append(panda_frame)
+                concat_result = (
+                pd.concat(all_results, ignore_index=True)
+                .groupby("translated", as_index=False)
+                .sum()
+                )
+            else:
+                all_results.append(result_frame)
+                concat_result = (
+                    cudf.concat(all_results, ignore_index=True)
+                    .groupby("translated")
+                    .sum()
+                    .reset_index()
+                )
+
+        # NOTE:: concat result should not be unbounded right since we have a else branch?
         concat_result.columns = ["translated", "multiplicity"]
         concat_result["multiplicity"] = concat_result["multiplicity"].clip(upper=255)
-        # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        # print(f"final result shape is: {concat_result.shape}")
-        # print(f"Kmers before calculating canonical kmers: {concat_result}")
         kmers_np = self.check_rev_comp_kmer(concat_result)
-
         final_kmers = (
             cudf.DataFrame(
                 {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
@@ -168,7 +164,6 @@ class KmerExtractorGPU:
             .reset_index()
         )
         final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
-        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
         return final_kmers.to_numpy().astype("uint64", copy=False)
 
     # lets set arbitrary amount of batch size for canonical kmer calculation
@@ -217,44 +212,7 @@ class KmerExtractorGPU:
         grouped_kmers = kmers.groupby("canonical").sum().reset_index()
         grouped_kmers['multiplicity'] = grouped_kmers['multiplicity'].clip(upper=255)
         return grouped_kmers
-    def correct_reads_batch(self):
-        batch_size = 5000000
-        batch_result = []
-        cuda.profile_start()
-        start = cuda.event()
-        end = cuda.event()
-        start.record()
-        # transfering necessary data into GPU side
-        MAX_READ_LENGTH = 400
-        dev_kmer_spectrum = cuda.to_device(self.spectrum)
-        for batch_idx in range(0, len(self.reads), batch_size):
-            current_offsets = self.offsets[batch_idx: batch_idx + batch_size]
-            current_reads = self.reads[batch_idx: batch_idx + batch_size]
-            dev_reads_2d = cuda.to_device(current_reads)
-            dev_offsets = cuda.to_device(current_offsets)
-            dev_reads_corrected_2d = cuda.to_device(
-                np.zeros((current_offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
-            )
-            tpb = 512
-            bpg = (current_offsets.shape[0] + tpb) // tpb
-
-            one_sided_kernel[bpg, tpb](
-                dev_kmer_spectrum,
-                dev_reads_2d,
-                dev_offsets,
-                self.kmer_length,
-                dev_reads_corrected_2d,
-            )
-            batch_result.append(dev_reads_corrected_2d.copy_to_host())
-        end.record()
-        end.synchronize()
-        transfer_time = cuda.event_elapsed_time(start, end)
-        print(f"execution time of the kernel:  {transfer_time} ms")
-        self.corrected_reads = np.concatenate(batch_result)
-        cuda.profile_stop()
-    # NOTE:: How about I do this in batch when the data is large
     def correct_reads(self):
-        return self.correct_reads_batch()
         cuda.profile_start()
         start = cuda.event()
         end = cuda.event()
@@ -286,6 +244,7 @@ class KmerExtractorGPU:
         print(f"execution time of the kernel:  {transfer_time} ms")
         self.corrected_reads = dev_reads_corrected_2d.copy_to_host()
         cuda.profile_stop()
+
     def back_to_sequence_helper(self):
         # find reads max length
         offsets_df = cudf.DataFrame({"start": self.offsets[:, 0], "end": self.offsets[:, 1]})
@@ -315,12 +274,6 @@ class KmerExtractorGPU:
         del self.spectrum
         self.reads = dev_reads.copy_to_host()
 
-    #we will call this in parallel
-    def write_corrected_reads(self, output_filename, src_filename, bound):
-        # print(bound)
-        fastq_parser.write_fastq_file(
-        output_filename, src_filename, self.reads, self.bound[0]
-    )
     def get_actor_reads(self):
         return self.reads
     def get_actor_offsets(self):
