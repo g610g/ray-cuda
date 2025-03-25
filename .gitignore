@@ -4,3 +4,4 @@ fastq_parser/target/
 human_30x_3perc_single.aln
 human/
 human_30x_3perc_single.fq
+quast_output/

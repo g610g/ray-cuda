@@ -31,11 +31,17 @@ def binary_search_2d(sorted_arr, needle):
 
 
 @cuda.jit(device=True)
-def transform_to_key(ascii_kmer, len):
+def to_array_kmer(km, kmer_length, whole_number_km):
+    for i in range(kmer_length):
+        km[i] = (whole_number_km // (10 ** (kmer_length - 1 - i))) % 10
+
+
+@cuda.jit(device=True)
+def transform_to_key(km, len):
     multiplier = 1
     key = 0
     while len != 0:
-        key += ascii_kmer[len - 1] * multiplier
+        key += km[len - 1] * multiplier
         multiplier *= 10
         len -= 1
 
@@ -56,7 +62,7 @@ def give_kmer_multiplicity(kmer_spectrum, kmer):
     if index != -1:
         return kmer_spectrum[index][1]
 
-    return index
+    return 0
 
 
 @cuda.jit(device=True)

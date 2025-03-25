@@ -1,16 +1,54 @@
+from typing import final
+from unittest import result
+import time
+import pandas as pd
 import ray
 import math
 import numpy as np
 import cudf
+import fastq_parser
+from numba import cuda
+from shared_core_correction import one_sided_kernel
+from shared_helpers import  back_sequence_kernel
+from utility_helpers.utilities import reverse_comp_kmer
 
 
-@ray.remote(num_gpus=1, num_cpus=1)
+
+@ray.remote(num_gpus=1, num_cpus=4)
 class KmerExtractorGPU:
-    def __init__(self, kmer_length):
+    def __init__(self, kmer_length, bounds, fastq_filepath):
         self.kmer_length = kmer_length
         self.translation_table = str.maketrans(
-            {"A": "1", "C": "2", "G": "3", "T": "4", "N": "5"}
+            {
+                "A": "1",
+                "C": "2",
+                "G": "3",
+                "T": "4",
+                "N": "5",
+                "R": "5",
+                "M": "5",
+                "K": "5",
+                "S": "5",
+                "W": "5",
+                "Y": "5",
+            }
         )
+        self.fastq_filepath = fastq_filepath
+        self.bound = bounds
+        self.reads = []
+        self.spectrum = []
+        self.offsets = []
+        self.corrected_reads = []
+
+    def update_spectrum(self, spectrum):
+        self.spectrum = spectrum
+
+    def extract_reads(self, ):
+        if len(self.bound) == 0:
+            print("Bound is not set. Add better error handling")
+            return
+        self.reads = fastq_parser.parse_fastq_foreach(self.fastq_filepath, self.bound[0], self.bound[2])
+
 
     def create_kmer_df(self, reads):
         read_df = cudf.Series(reads)
@@ -18,120 +56,285 @@ class KmerExtractorGPU:
         exploded_kmers = kmers.explode()
         return exploded_kmers.value_counts()
 
-    def get_offsets(self, reads):
-        read_df = cudf.DataFrame({"reads": reads})
+    def get_offsets(self):
+        read_s = cudf.Series(self.reads, name="reads")
+        read_df = read_s.to_frame()
         str_lens = read_df["reads"].str.len()
         end_indices = str_lens.cumsum()
         start_indices = end_indices.shift(1, fill_value=0)
         offsets = cudf.DataFrame(
             {"start_indices": start_indices, "end_indices": end_indices}
         ).to_numpy()
-        return offsets
+        self.offsets = offsets
+        return
 
-    def transform_reads_2_1d_batch(self, reads, batch_size):
-        result = np.array([])
-        for i in range(0, len(reads), batch_size):
-            read_df = cudf.DataFrame({"reads": reads[i : i + batch_size]})
-            result = np.append(
-                result,
-                read_df["reads"]
-                .str.findall(".")
+    def transform_reads_2_1d_batch(self, batch_size):
+        result = []
+        read_s = cudf.Series(self.reads, name="reads")
+        max_length = read_s.str.len().max()
+
+        for i in range(0, len(self.reads), batch_size):
+            read_s = cudf.Series(self.reads[i : i + batch_size], name="reads")
+            padded_reads = read_s.str.pad(width=max_length, side="right", fillchar="0")
+            transformed = (
+                padded_reads.str.findall(".")
                 .explode()
                 .str.translate(self.translation_table)
                 .astype("uint8")
-                .to_numpy()
             )
+            result.append(transformed.to_numpy().reshape(len(read_s), max_length))
 
-        return result
+        concatenated = np.concatenate(result).astype("uint8")
+        # print(concatenated)
+        return concatenated
 
-    def transform_reads_2_1d(self, reads, batch_size):
-        read_df = cudf.DataFrame({"reads": reads})
-        if len(reads) > batch_size :
-            return self.transform_reads_2_1d_batch(reads, batch_size) 
-        return (
-                read_df["reads"]
-                .str.findall(".")
-                .explode()
-                .str.translate(self.translation_table)
-                .astype("uint8")
-                .to_numpy()
+    def transform_reads_2_1d(self, batch_size):
+        if len(self.reads) > batch_size:
+            self.reads = self.transform_reads_2_1d_batch(batch_size)
+            return
+        read_s = cudf.Series(self.reads, name="reads")
+        max_length = read_s.str.len().max()
+        padded_reads = read_s.str.pad(width=max_length, side="right", fillchar="0")
+        transformed = (
+            padded_reads.str.findall(".")
+            .explode()
+            .str.translate(self.translation_table)
+            .astype("uint8")
         )
-
+        self.reads = transformed.to_numpy().reshape(len(self.reads), max_length)
+    
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
 
-    def calculate_kmers_multiplicity_batch(self, reads, batch_size):
+    def check_rev_comp_kmer(self, kmer_df):
+        # (refactor this type conversions)
+        kmer_np = kmer_df.astype("uint64").to_numpy().astype(np.uint64)
+        dev_kmers = cuda.to_device(kmer_np)
+        tbp = 1024
+        # bpg = math.ceil(kmer_np.shape[0] / tbp)
+        bpg = (kmer_np.shape[0] + tbp) // tbp
+        reverse_comp_kmer[bpg, tbp](dev_kmers, self.kmer_length)
+        kmers = dev_kmers.copy_to_host()
+        return kmers
+
+    # store the dataframe as state of this worker to be used by downstream tasks
+    def calculate_kmers_multiplicity_batch(self, batch_size):
         all_results = []
-        for i in range(0, len(reads), batch_size):
-            read_s = cudf.Series(reads[i : i + batch_size], name="reads")
+        for i in range(0, len(self.reads), batch_size):
+
+            read_s = cudf.Series(self.reads[i : i + batch_size], name="reads")
             read_df = read_s.to_frame()
-            read_df["translated"] = read_df["reads"].str.translate(
-                self.translation_table
-            )
+
+            replaced_df = read_df["reads"].str.replace(r"[NWKSYMR]", "A")
+            # print(replaced_df)
+            read_df["translated"] = replaced_df.str.translate(self.translation_table)
             ngram_kmers = read_df["translated"].str.character_ngrams(
                 self.kmer_length, True
             )
             exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
+            # unique_chars = set("".join(exploded_ngrams.to_pandas().astype(str)))
+            # print(unique_chars)
             numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
             result_frame = numeric_ngrams.value_counts().reset_index()
-            all_results.append(result_frame)
+            result_frame = result_frame[result_frame['count'] > 3]
+            panda_frame = result_frame.to_pandas()
+            all_results.append(panda_frame)
 
-        final_result = (
-            cudf.concat(all_results).groupby("translated").sum().reset_index()
+        concat_result = (
+        pd.concat(all_results, ignore_index=True)
+        .groupby("translated", as_index=False)
+        .sum()
         )
-        final_result.columns = ["translated", "multiplicity"]
-        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        print(f"final result shape is: {final_result.shape}")
-        print(f"final result is: {final_result}")
-        return final_result
+        # concat_result = (
+        #     cudf.concat(all_results, ignore_index=True)
+        #     .groupby("translated")
+        #     .sum()
+        #     .reset_index()
+        # )
+        concat_result.columns = ["translated", "multiplicity"]
+        concat_result["multiplicity"] = concat_result["multiplicity"].clip(upper=255)
+        # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        # print(f"final result shape is: {concat_result.shape}")
+        # print(f"Kmers before calculating canonical kmers: {concat_result}")
+        kmers_np = self.check_rev_comp_kmer(concat_result)
 
-    def calculate_kmers_multiplicity(self, reads, batch_size):
+        final_kmers = (
+            cudf.DataFrame(
+                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+            )
+            .groupby("canonical")
+            .sum()
+            .reset_index()
+        )
+        final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
+        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers.to_numpy().astype("uint64", copy=False)
 
-        if len(reads) > batch_size:
-            return self.calculate_kmers_multiplicity_batch(reads, batch_size)
+    # lets set arbitrary amount of batch size for canonical kmer calculation
 
-        read_s = cudf.Series(reads, name="reads")
+    def calculate_kmers_multiplicity(self, batch_size):
+
+        if len(self.reads) > batch_size:
+            return self.calculate_kmers_multiplicity_batch(batch_size)
+
+        read_s = cudf.Series(self.reads, name="reads")
         read_df = read_s.to_frame()
 
-        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
+        replaced_df = read_df["reads"].str.replace(r"[NWKSYMR]", "A")
+        read_df["translated"] = replaced_df.str.translate(self.translation_table)
 
+        # computes canonical kmers
         ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
-
         exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
+
         numeric_ngrams = exploded_ngrams.astype("uint64").reset_index(drop=True)
         result_frame = numeric_ngrams.value_counts().reset_index()
 
         result_frame.columns = ["translated", "multiplicity"]
+        # print(f"used kmer len for extracting kmers is: {self.kmer_length}")
+        # print(f"Kmers before calculating canonical kmers: {result_frame}")
+        # we do this by batch
+        kmers_np  = self.check_rev_comp_kmer(result_frame)
 
-        print(f"used kmer len for extracting kmers is: {self.kmer_length}")
-        return result_frame
+        final_kmers = (
+            cudf.DataFrame(
+                {"canonical": kmers_np[:, 0], "multiplicity": kmers_np[:, 1]}
+            )
+            .groupby("canonical")
+            .sum()
+            .reset_index()
+        )
+        final_kmers["multiplicity"] = final_kmers["multiplicity"].clip(upper=255)
+        # print(f"Kmers after calculating canonical kmers: {final_kmers}")
+        return final_kmers.to_numpy().astype("uint64", copy=False)
 
-    def give_lengths_of_kmers(self, reads):
-        read_s = cudf.Series(reads, name="reads")
+    def combine_kmers(self, kmers):
+        kmers = np.concatenate(kmers)
+        # print(f"Kmers within combine: {kmers}")
+        kmers = cudf.DataFrame({"canonical": kmers[:, 0], "multiplicity": kmers[:, 1]})
+        # print(f"Kmer dataframe within combine:{kmers}")
+        grouped_kmers = kmers.groupby("canonical").sum().reset_index()
+        grouped_kmers['multiplicity'] = grouped_kmers['multiplicity'].clip(upper=255)
+        return grouped_kmers
+    def correct_reads_batch(self):
+        batch_size = 5000000
+        batch_result = []
+        cuda.profile_start()
+        start = cuda.event()
+        end = cuda.event()
+        start.record()
+        # transfering necessary data into GPU side
+        MAX_READ_LENGTH = 400
+        dev_kmer_spectrum = cuda.to_device(self.spectrum)
+        for batch_idx in range(0, len(self.reads), batch_size):
+            current_offsets = self.offsets[batch_idx: batch_idx + batch_size]
+            current_reads = self.reads[batch_idx: batch_idx + batch_size]
+            dev_reads_2d = cuda.to_device(current_reads)
+            dev_offsets = cuda.to_device(current_offsets)
+            dev_reads_corrected_2d = cuda.to_device(
+                np.zeros((current_offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
+            )
+            tpb = 512
+            bpg = (current_offsets.shape[0] + tpb) // tpb
 
-        read_df = read_s.to_frame()
+            one_sided_kernel[bpg, tpb](
+                dev_kmer_spectrum,
+                dev_reads_2d,
+                dev_offsets,
+                self.kmer_length,
+                dev_reads_corrected_2d,
+            )
+            batch_result.append(dev_reads_corrected_2d.copy_to_host())
+        end.record()
+        end.synchronize()
+        transfer_time = cuda.event_elapsed_time(start, end)
+        print(f"execution time of the kernel:  {transfer_time} ms")
+        self.corrected_reads = np.concatenate(batch_result)
+        cuda.profile_stop()
+    # NOTE:: How about I do this in batch when the data is large
+    def correct_reads(self):
+        return self.correct_reads_batch()
+        cuda.profile_start()
+        start = cuda.event()
+        end = cuda.event()
+        start.record()
+        # transfering necessary data into GPU side
+        MAX_READ_LENGTH = 400
+        dev_reads_2d = cuda.to_device(self.reads)
+        dev_kmer_spectrum = cuda.to_device(self.spectrum)
+        dev_offsets = cuda.to_device(self.offsets)
+        dev_reads_corrected_2d = cuda.to_device(
+            np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
+        )
+        # allocating gpu threads
+        # bpg = math.ceil(offsets.shape[0] // tpb)
+        tpb = 512
+        bpg = (self.offsets.shape[0] + tpb) // tpb
 
-        read_df["translated"] = read_df["reads"].str.translate(self.translation_table)
-        ngram_kmers = read_df["translated"].str.character_ngrams(self.kmer_length, True)
+        one_sided_kernel[bpg, tpb](
+            dev_kmer_spectrum,
+            dev_reads_2d,
+            dev_offsets,
+            self.kmer_length,
+            dev_reads_corrected_2d,
+        )
 
-        exploded_ngrams = ngram_kmers.explode().reset_index(drop=True)
-        kmer_lens = exploded_ngrams.str.len().reset_index(drop=True)
-        kmer_lens_df = kmer_lens.to_frame()
-        kmer_lens_df.columns = ["lengths"]
+        end.record()
+        end.synchronize()
+        transfer_time = cuda.event_elapsed_time(start, end)
+        print(f"execution time of the kernel:  {transfer_time} ms")
+        self.corrected_reads = dev_reads_corrected_2d.copy_to_host()
+        cuda.profile_stop()
+    def back_to_sequence_helper(self):
+        # find reads max length
+        offsets_df = cudf.DataFrame({"start": self.offsets[:, 0], "end": self.offsets[:, 1]})
+        offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
+        # max_segment_length = offsets_df["length"].max()
+        # print(f"max segment length: {max_segment_length}")
+        cuda.profile_start()
+        start = cuda.event()
+        end = cuda.event()
+        start.record()
 
-        return kmer_lens_df
+        dev_reads = cuda.to_device(self.corrected_reads)
+        dev_offsets = cuda.to_device(self.offsets)
+        tpb = 1024
+        bpg = (self.offsets.shape[0] + tpb) // tpb
 
+        back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets)
 
-# todo:refactor
+        end.record()
+        end.synchronize()
+        transfer_time = cuda.event_elapsed_time(start, end)
+        print(f"execution time of the back to sequence kernel:  {transfer_time} ms")
+        cuda.profile_stop()
+
+        del self.corrected_reads
+        del self.offsets
+        del self.spectrum
+        self.reads = dev_reads.copy_to_host()
+
+    #we will call this in parallel
+    def write_corrected_reads(self, output_filename, src_filename, bound):
+        # print(bound)
+        fastq_parser.write_fastq_file(
+        output_filename, src_filename, self.reads, self.bound[0]
+    )
+    def get_actor_reads(self):
+        return self.reads
+    def get_actor_offsets(self):
+        return self.offsets
+
+# TODO::refactor
 def calculatecutoff_threshold(occurence_data, bin):
 
-    hist_vals, bin_edges = np.histogram(occurence_data, bins=bin)
+    hist_vals, bin_edges = np.histogram(occurence_data, bins=int(bin))
 
-    print((hist_vals[:30]))
+    # print((hist_vals[:]))
     bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-    print(bin_centers[:30])
+    # print(bin_centers[:])
 
     valley_index = 0
 

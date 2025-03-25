@@ -24,4 +24,9 @@ bwa mem genetic-assets/GCF_000005845.2_ASM584v2_genomic.fna genetic-assets/pleas
 samtools sort genetic-assets/please_aligned.bam -o genetic-assets/please_aligned_sorted.bam
 samtools index genetic-assets/please_aligned_sorted.bam
 
-
+#alignment using bowtie
+bowtie2-build reference_genome.fna reference_index  # Build index
+bowtie2 -x reference_index -U original_reads.fastq -S original_reads.sam
+samtools view -bS original_reads.sam > original_reads.bam
+samtools sort original_reads.bam -o original_reads_sorted.bam
+samtools index original_reads_sorted.bam

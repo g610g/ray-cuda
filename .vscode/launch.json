@@ -1,0 +1,15 @@
+{
+    "configurations": [
+    {
+        "name": "CUDA GDB Server: Launch",
+        "type": "cuda-gdb",
+        "request": "launch",
+        "program": "${workspaceFolder}/parallel.py",
+        "gdb":"cuda-gdb",
+
+        
+    }
+    ]
+
+
+}
