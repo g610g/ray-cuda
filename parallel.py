@@ -288,7 +288,7 @@ if __name__ == "__main__":
         exit(1)
     cpus_detected = int(ray.cluster_resources()["CPU"])
     gpus_detected = int(ray.cluster_resources()["GPU"])
-    gpus_detected = 1
+    gpus_detected = 3
     # hasone_gpu = gpus_detected == 1
     print(f"number of gpus detected: {gpus_detected}")
     kmer_len = 16
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     print(
         f"time it takes to convert Seq object into string: {transform_to_string_end_time - start_time}"
     )
-    kmer_extract_start_time = time.perf_counter()
+    
     kmer_actors = []
     reads_per_gpu = reads_len // gpus_detected
     remainder = reads_len % gpus_detected
@@ -323,16 +323,15 @@ if __name__ == "__main__":
     offsets_extract_references = []
     reads_2d_references = []
     reads = []
-    # if hasone_gpu:
-    #     reads = ray.get(kmer_actors[0].extract_reads.remote())
     ray.get([kmer_actor.extract_reads.remote() for kmer_actor in kmer_actors])
     parse_reads_endtime = time.perf_counter()
     print(
         f"Time it takes to parse reads {parse_reads_endtime - parse_reads_starttime}"
     )
+    kmer_extract_start_time = time.perf_counter()
     for kmer_actor in kmer_actors:
         kmer_extract_references.append(
-            kmer_actor.calculate_kmers_multiplicity.remote(1500000)
+            kmer_actor.calculate_kmers_multiplicity.remote(1000000)
         )
     kmers = ray.get(kmer_extract_references)
     # print(kmers)
@@ -378,13 +377,18 @@ if __name__ == "__main__":
     ]
 
     kmer_np = filtered_kmer_df.astype("uint64").to_numpy()
+
+    #freeing GPU memory
+    del non_unique_kmers
+    del kmer_occurences
+    del filtered_kmer_df
+
     # print(kmer_np)
     # print(f"Number of trusted kmers: {kmer_np.shape[0]}")
 
     sort_start_time = time.perf_counter()
 
     sorted_kmer_np = kmer_np[kmer_np[:, 0].argsort()]
-    sorted_by_occurence = kmer_np[kmer_np[:, 1].argsort()[::-1]]
     sort_end_time = time.perf_counter()
 
     # print(f"reads 1d length: {len(reads_2d)}")
@@ -404,7 +408,7 @@ if __name__ == "__main__":
         ]
     )
     ray.get([kmer_actor.correct_reads.remote() for kmer_actor in kmer_actors])
-
+    del sorted_kmer_np_reference
     # ray.get(remote_core_correction.remote(sorted_kmer_np_reference, reads, offsets, 16))
 
     print("done correcting")
@@ -421,44 +425,30 @@ if __name__ == "__main__":
     output_filename = filename + "GPUMUSKET.fastq"
     print(output_filename)
 
-    # ray.get([kmer_actor.write_corrected_reads.remote(output_filename, sys.argv[1], bound) for (kmer_actor, bound) in zip(kmer_actors, start_end)])
     write_references = []
     output_files = []
-
+    corrected_reads = []
     if gpus_detected == 1:
-        bounds = []
-        start = 0
-        tasks = 5
-        reads_per_task = reads_len // tasks 
-        remainder = reads_len % tasks
-        for i in range(5):
-            extra = 1 if i < remainder else 0  # Distribute remainder to first GPUs
-            end = start + reads_per_task + extra
-            bounds.append([start, end, end - start])
-            start = end
-        num = 1
         corrected_reads = ray.get(kmer_actors[0].get_actor_reads.remote())
-        print(f"corrected reads: {corrected_reads}")
-        print(f"bounds : {bounds}")
-        for bound in bounds:
-            local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
-            output_files.append(local_filename)
-            write_references.append(write_fastq_file.remote(local_filename, sys.argv[1], bound, corrected_reads[bound[0] : bound[1]]))
-            num += 1
-        ray.get(write_references)
 
     else:
-        num = 1
-        for (kmer_actor, bound) in zip(kmer_actors, start_end):
-            local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
-            # print(local_filename)
-            output_files.append(local_filename)
-            write_references.append(
-                kmer_actor.write_corrected_reads.remote(local_filename, sys.argv[1], bound)
-            )
-            num += 1
-        ray.get(write_references)
+        #we combine the reads from all of the actors
+        reads_actors = ray.get([kmer_actor.get_actor_reads.remote() for kmer_actor in kmer_actors])
+        corrected_reads = np.concatenate(reads_actors)
 
+    del kmer_actors
+
+    corrected_reads_ref = ray.put(corrected_reads)
+    tasks = 5
+    bounds = partition_reads(tasks, reads_len)
+    num = 1
+    # we write reads into multiple file and then combine them afterwards
+    for bound in bounds:
+        local_filename = filename + "GPUMUSKET" + str(num) + ".fastq"
+        output_files.append(local_filename)
+        write_references.append(write_fastq_file.remote(local_filename, sys.argv[1], bound, corrected_reads_ref))
+        num += 1
+    ray.get(write_references)
     print("Done writing to different files")
     fastq_parser.combine_files(output_files, output_filename)
     print("Done combining different files") 

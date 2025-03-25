@@ -13,7 +13,17 @@ def get_filename_without_extension(file_path) -> str:
     # NOTE:: fix this here
     return ""
 
-
+def partition_reads(num_partition, reads_len)->list:
+    bounds = []
+    start = 0
+    reads_per_task = reads_len // num_partition 
+    remainder = reads_len % num_partition
+    for i in range(5):
+        extra = 1 if i < remainder else 0  # Distribute remainder to first GPUs
+        end = start + reads_per_task + extra
+        bounds.append([start, end, end - start])
+        start = end
+    return bounds
 @ray.remote(num_cpus=1)
 def calculate_solids(solids):
     for solid in solids:
@@ -148,7 +158,7 @@ def calculate_non_solids(solids, seqlen):
     )
 
 @ray.remote(num_cpus=1)
-def write_fastq_file(output_filename, src_filename,bound, reads):
+def write_fastq_file(output_filename, src_filename, bound, reads):
     fastq_parser.write_fastq_file(
-    output_filename, src_filename, reads, bound[0]
+        output_filename, src_filename, reads[bound[0]: bound[1]], bound[0]
     )
