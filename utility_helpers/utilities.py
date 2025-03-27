@@ -159,6 +159,8 @@ def calculate_non_solids(solids, seqlen):
 
 @ray.remote(num_cpus=1)
 def write_fastq_file(output_filename, src_filename, bound, reads):
+    print(bound)
+    print(reads)
     fastq_parser.write_fastq_file(
-        output_filename, src_filename, reads[bound[0]: bound[1]], bound[0]
+        output_filename, src_filename, reads, bound[0]
     )

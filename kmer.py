@@ -1,5 +1,7 @@
 import pandas as pd
 import ray
+import time
+import gc
 import math
 import numpy as np
 import cudf
@@ -33,6 +35,7 @@ class KmerExtractorGPU:
         self.reads = []
         self.spectrum = []
         self.offsets = []
+        self.read_length = 0
         self.corrected_reads = []
 
     def update_spectrum(self, spectrum):
@@ -61,6 +64,7 @@ class KmerExtractorGPU:
             {"start_indices": start_indices, "end_indices": end_indices}
         ).to_numpy()
         self.offsets = offsets
+        self.read_length = offsets.shape[0]
         return
 
     def transform_reads_2_1d_batch(self, batch_size):
@@ -80,7 +84,7 @@ class KmerExtractorGPU:
             result.append(transformed.to_numpy().reshape(len(read_s), max_length))
 
         concatenated = np.concatenate(result).astype("uint8")
-        # print(concatenated)
+        del result
         return concatenated
 
     def transform_reads_2_1d(self, batch_size):
@@ -96,8 +100,9 @@ class KmerExtractorGPU:
             .str.translate(self.translation_table)
             .astype("uint8")
         )
+        del self.reads
         self.reads = transformed.to_numpy().reshape(len(self.reads), max_length)
-    
+
     def get_read_lens(self, reads):
         read_df = cudf.DataFrame({"reads": reads})
         return read_df["reads"].str.len()
@@ -135,21 +140,17 @@ class KmerExtractorGPU:
             if len(self.reads) > 15000000:
 
                 result_frame = result_frame[result_frame['count'] > 3]
-                panda_frame = result_frame.to_pandas()
-                all_results.append(panda_frame)
-                concat_result = (
-                pd.concat(all_results, ignore_index=True)
-                .groupby("translated", as_index=False)
-                .sum()
-                )
-            else:
-                all_results.append(result_frame)
-                concat_result = (
-                    cudf.concat(all_results, ignore_index=True)
-                    .groupby("translated")
-                    .sum()
-                    .reset_index()
-                )
+                # panda_frame = result_frame.to_pandas()
+                # all_results.append(result_frame)
+
+            all_results.append(result_frame)
+
+        concat_result = (
+            cudf.concat(all_results, ignore_index=True)
+            .groupby("translated")
+            .sum()
+            .reset_index()
+        )
 
         # NOTE:: concat result should not be unbounded right since we have a else branch?
         concat_result.columns = ["translated", "multiplicity"]
@@ -226,7 +227,6 @@ class KmerExtractorGPU:
             np.zeros((self.offsets.shape[0], MAX_READ_LENGTH), dtype="uint8")
         )
         # allocating gpu threads
-        # bpg = math.ceil(offsets.shape[0] // tpb)
         tpb = 512
         bpg = (self.offsets.shape[0] + tpb) // tpb
 
@@ -237,7 +237,9 @@ class KmerExtractorGPU:
             self.kmer_length,
             dev_reads_corrected_2d,
         )
-
+        del self.reads
+        del self.spectrum
+        gc.collect()
         end.record()
         end.synchronize()
         transfer_time = cuda.event_elapsed_time(start, end)
@@ -249,8 +251,7 @@ class KmerExtractorGPU:
         # find reads max length
         offsets_df = cudf.DataFrame({"start": self.offsets[:, 0], "end": self.offsets[:, 1]})
         offsets_df["length"] = offsets_df["end"] - offsets_df["start"]
-        # max_segment_length = offsets_df["length"].max()
-        # print(f"max segment length: {max_segment_length}")
+
         cuda.profile_start()
         start = cuda.event()
         end = cuda.event()
@@ -259,7 +260,7 @@ class KmerExtractorGPU:
         dev_reads = cuda.to_device(self.corrected_reads)
         dev_offsets = cuda.to_device(self.offsets)
         tpb = 1024
-        bpg = (self.offsets.shape[0] + tpb) // tpb
+        bpg = (self.read_length + tpb) // tpb
 
         back_sequence_kernel[bpg, tpb](dev_reads, dev_offsets)
 
@@ -271,13 +272,14 @@ class KmerExtractorGPU:
 
         del self.corrected_reads
         del self.offsets
-        del self.spectrum
+        del dev_offsets
+        gc.collect()
+        print("done deleting reads and offsets and spectrum")
         self.reads = dev_reads.copy_to_host()
 
     def get_actor_reads(self):
         return self.reads
-    def get_actor_offsets(self):
-        return self.offsets
+
 
 # TODO::refactor
 def calculatecutoff_threshold(occurence_data, bin):

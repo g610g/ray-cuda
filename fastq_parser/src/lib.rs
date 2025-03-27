@@ -398,16 +398,16 @@ fn write_fastq_file(
         }
     };
     let mut number_of_written_records = 0;
-    let np_matrix = unsafe { matrix.as_array() };
+    let np_matrix: numpy::ndarray::ArrayBase<numpy::ndarray::ViewRepr<&u8>, numpy::ndarray::Dim<[usize; 2]>> = unsafe { matrix.as_array() };
     let result: Result<Vec<String>, _> = np_matrix
         .rows()
         .into_iter()
         .map(|row| {
-            let mut vector_row = row.to_vec();
-            byte_to_string(&mut vector_row)
+            let byte_slice = row.as_slice().unwrap();
+            byte_to_string(byte_slice)
         })
         .collect();
-   
+
     let records = reader.records().skip(offset);
 
     match result {
@@ -444,11 +444,10 @@ fn write_fastq_file(
 }
 
 //this function unwraps for now. Add better error handling
-fn byte_to_string(byte_array: &mut Vec<u8>) -> Result<String, PyErr> {
-    if let Some(cleaned) = byte_array.iter().position(|&b| b == 0) {
-        byte_array.truncate(cleaned);
-    }
-    match std::str::from_utf8(byte_array) {
+fn byte_to_string(byte_array: &[u8]) -> Result<String, PyErr> {
+    let cleaned = byte_array.iter().position(|b| {*b == 0}).unwrap_or(byte_array.len());
+    
+    match std::str::from_utf8(&byte_array[..cleaned]) {
         Ok(string) => Ok(string.to_string()),
         Err(_) => Err(PyErr::new::<PyTypeError, _>("Invalid bytes array")),
     }
